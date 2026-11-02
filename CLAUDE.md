@@ -173,6 +173,21 @@ control (`SetFaultForTest`).
   - per-channel ray bending: a thick sheet's red and blue back images land
     together. The fringe this leaves out is printed by `--double`.
 
+## Browser demo
+- `demo/` is <https://pepper-demo.stoatworks-labs.com> (SW Pepper) and `/feed/`
+  (SW Pepper Feed); `.github/workflows/deploy.yml` deploys it on a push to main
+  (a route, not a custom domain: `wrangler.toml`).
+- After a shader edit: `python3 demo/tools/check_shaders.py --write` (verify.sh
+  fails on drift). It also fails if the `?:` on a struct in trace() that
+  plugin.js's `forWebGL()` respells for WebGL changes.
+- After a change to Controls, Rig, Coating or ProcessOpenGL: change the port in
+  `demo/plugin.js` (between the PORT and FRAME markers) too.
+- Locally: `python3 -m http.server -d demo`, or `npx wrangler dev` for the real
+  `_headers`.
+- Against the plugin: `python3 demo/tools/crosscheck/crosscheck.py` (needs
+  `build-universal/pgtest`, Chrome and a GPU). AGENTS.md has the gaps and the
+  last figures.
+
 ## Diagnostics
 
 `source/Diag.{h,cpp}` is a log file only, with no crash handler (this runs

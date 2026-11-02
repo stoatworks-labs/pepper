@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SW Pepper Feed — browser demo | Stoatworks Labs</title>
+    <meta name="description" content="Try SW Pepper Feed, an FFGL effect for Resolume, in your browser: the cross layout a real pyramid hologram is fed, one mirrored copy of the clip per face around the pyramid's small end. The plugin's own GLSL, ported to WebGL2 unedited, with its layout arithmetic ported to JavaScript. A demo, not the plugin." />
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="../vendor/kit.css" />
+    <link rel="canonical" href="https://pepper-demo.stoatworks-labs.com/feed/" />
+  </head>
+  <body data-plugin="feed">
+    <main id="demo">
+      <noscript>
+        <p>
+          This demo runs the plugin's shader and a port of its CPU half in your
+          browser, so it needs JavaScript and WebGL2. The plugin itself, its
+          source and its downloads are on
+          <a href="https://github.com/stoatworks-labs/pepper">its repository</a>.
+        </p>
+      </noscript>
+    </main>
+
+    <script type="module" src="../plugin.js"></script>
+    <script
+      src="../vendor/support-footer.js"
+      defer
+      data-app="Pepper"
+      data-repo="https://github.com/stoatworks-labs/pepper"
+      data-note="A browser demo of the plugin's shader over a port of its CPU half. Nothing you load here leaves your machine."
+    ></script>
+  </body>
+</html>

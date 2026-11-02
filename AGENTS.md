@@ -664,6 +664,69 @@ x64, Mesa llvmpipe 26.2.0, no GPU — on 2026-11-02.
   claimed; the harness's pictures are. Nothing has run in Resolume on macOS or on
   a GPU.
 
+## The browser demo (2026-11-02)
+
+`demo/` is <https://pepper-demo.stoatworks-labs.com> (SW Pepper) and `/feed/` (SW Pepper
+Feed), one `plugin.js` picked by `<body data-plugin>`, built to the fleet's `resolume-demo`
+kit rules (`~/Projects/resolume/specs/DEMO-BRIEF.md`), from throw's. What a reader of it must
+know:
+
+- **The shaders are the plugin's**: kVersion, kVertex, kCommon, kFeedFragment and
+  kPepperFragment (its three raw strings joined), spliced by `demo/tools/check_shaders.py
+  --write` into `demo/shaders.js` and compared character for character, with the JOIN on
+  both sides (AssembleVertex, AssembleFragment, both InitGLs, plugin.js's copy), and every
+  uniform any piece declares named in plugin.js. `tools/verify.sh` runs the check.
+- **One expression is respelled, and only one.** WebGL refuses `?:` on a struct (ANGLE:
+  "ternary operator is not allowed for structures in ESSL 1.0 and webgl"); desktop GL and
+  plain ES 3.00 allow it, and trace() hands a thick sheet's back images
+  `k < 3 ? W : cOver( W, echo )`. `forWebGL()` in plugin.js adds `demoPickCoef( c, a, b )`
+  before trace() and calls it there instead: the same operand is picked, the other (cOver
+  is pure) is computed and discarded. The page refuses to run unless each text occurs once,
+  and check_shaders.py fails if either stops matching Shaders.cpp. The page's disclosure
+  and banner say so. Without it SW Pepper does not compile in any browser; the Feed needs
+  nothing.
+- **The CPU half is a port**, in double where the C++ is double and `Math.fround` where it
+  is float, parameters in a Float32Array: Controls.cpp, Rig.cpp (PCG hash in uint32) and
+  Coating.cpp (the Airy sum with libc++'s complex `sqrt`/`exp` formulas) between the PORT
+  markers in `demo/plugin.js`, and the CPU half of Pepper.cpp and Feed.cpp (constructors,
+  SetFloatParameter, every uniform ProcessOpenGL sets, the coat table on unit 2) between the
+  FRAME markers. Change those and change the port too. Before the page existed, the port was
+  run in node against the C++ (a throwaway harness linking Controls/Rig/Coating): every rig
+  and default value float-identical over 13 cases, 149,085 numbers; the coat table within
+  2.2e-16. That harness is not in the repo. Not ported: the clock's unit vote (Timing.cpp;
+  the page hands over its own seconds), the log, the About block, the Fault uniform (0).
+- **Two inputs from a kit made for one.** The kit's Clip picker is the Screen (Src), so
+  "Use my own…" makes the visitor's picture the ghost; a second copy of the kit's clip
+  generator renders the Stage (Dest), picked by a dropdown the kit calls a variant. Every
+  stage clip is opaque. Opacity is a slider, and the disclosure says Arena binds it to the
+  layer fader. Linear Light (parameter 0, hidden in Arena) is shown.
+- **The page's own `differences` list says all of this on the page.** Keep it true.
+
+How it was verified, and how to again (it needs this Mac's GPU and Chrome, so verify.sh does
+not run it):
+
+- `demo/tools/crosscheck/crosscheck.py [--size 1280x720]` (after verify.sh, or
+  `cmake --build build-universal --target pgtest`). SW Pepper: a stage and a screen the
+  script draws, fed to `pgtest --pipe` (Dest on stdin, Src from `--pipe-src`) and to the
+  page through `window.pepperDemo.renderCase` (a fresh instance) in headless Chrome; a case
+  with a time is the second frame at 1 / time fps. SW Pepper Feed: `pgtest --plugin feed
+  --out` on the harness's quads-b or bars card, which the script rebuilds bit for bit.
+  First, both tables of controls against `pgtest --list`. 27 cases: the defaults at t 0 and
+  1.25, the screen above, a steep near pane, float glass at Thickness 1 and 0.6 (the
+  respelled line), aluminium and a titania coat on thick acrylic, Vertical and 45° sources, both
+  pyramids, the pyramid apex up under a 135° source, the view moved, gamma-space with every
+  gain, a tinted polycarbonate, a strong ripple at 0.7 s, Opacity 0.5, a partly transparent
+  screen, a 4:3 screen and a portrait one into the pyramid; the feed at its defaults, three
+  sides, above, Centre 0 and 1, and bars at 4:3. A case passes when no pixel is more than one
+  level of 255 apart and 99% are identical. 2 November 2026, M4 Max, Chrome 156 through
+  ANGLE on Metal: all 26 + 3 controls agree, every uniform set; every case within one level
+  everywhere at 640 × 360 and 1280 × 720, **99.997% to 100% identical** (the feed 100%).
+  Negative controls, each caught: Sheet Angle one slider step (0.001) off is 93.5%
+  identical and 13 levels out, Distance one step 78% and 88 levels, Source Level one step
+  77%, Coat Thickness one step 86%, Thickness one step 3 levels out, the clock one 60 Hz
+  frame late 71% and 150 levels, the feed's Centre one step 116 levels out at an arm's edge.
+  Other GPUs and browsers are not compared.
+
 ## Open questions
 
 - **Does a rotated-copies feed read mirrored in a real pyramid?** The geometry

@@ -80,6 +80,22 @@ else
 fi
 
 #---------------------------------------------------------------------------
+# The page runs the plugin's shaders: a shader edited here and not spliced
+# across would leave it drawing something else and saying it is the plugin.
+# The check also holds the page's one WebGL respelling to the line it
+# replaces. The CPU half in demo/plugin.js is a hand port: demo/tools/crosscheck/
+# compares the page's pictures with pgtest's, and needs Chrome and a GPU, so it
+# is run by hand (AGENTS.md).
+#---------------------------------------------------------------------------
+step "browser demo"
+if python3 demo/tools/check_shaders.py >"$LOGS/demo.log" 2>&1; then
+	pass "demo/shaders.js is source/Shaders.cpp, and the respelling still fits"
+else
+	sed 's/^/   /' "$LOGS/demo.log"
+	fail "the demo's shaders have drifted from source/Shaders.cpp"
+fi
+
+#---------------------------------------------------------------------------
 # A fresh universal Release build -- the one that would ship. The dev build
 # in build/ is arm64 only and is not what any of the binary checks below
 # should be looking at.

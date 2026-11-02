@@ -251,6 +251,20 @@ overhead screen, where each arm's top points inward.</sub>
 **SW Pepper Feed**: Sides, Centre and Mount, with the same mappings as the
 mixer's. Under Screen Above the arms' tops point inward.
 
+## Browser demo
+
+**<https://pepper-demo.stoatworks-labs.com/>** is SW Pepper, and
+**[/feed/](https://pepper-demo.stoatworks-labs.com/feed/)** is SW Pepper Feed: every control
+with its own name, group and default, a generated stage behind the glass and a generated
+screen under it, or a picture of yours as the screen (decoded in the page, never uploaded).
+The shaders are the plugin's own GLSL, spliced unedited (`demo/tools/check_shaders.py`, run
+by `tools/verify.sh`), with one exception the page states: WebGL refuses a `?:` on a struct,
+so the one in the thick-sheet trace is spelled as an equivalent call. The CPU half (the
+controls, the rig, the foil's ripple, the coat's table) is a JavaScript port, and
+`demo/tools/crosscheck/` renders it and `pgtest` from the same frames: in 27 cases across
+both plugins, no pixel is more than one level of 255 from the plugin's. It is a demo, not
+the plugin, and says what it leaves out.
+
 ## Build
 
 Needs CMake and the Resolume FFGL SDK, which is a submodule.
