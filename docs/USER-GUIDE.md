@@ -2,7 +2,7 @@
 
 Pepper is Pepper's ghost for [Resolume](https://resolume.com) Arena and Avenue: a sheet
 of glass or foil at an angle, reflecting a hidden screen over the stage behind it. It
-comes as two FFGL plugins:
+comes as two FFGL plugins, a mixer and an effect.
 
 - **SW Pepper**, a **mixer**. Put it in a layer's Blend Mode and the layer below is the
   stage, this layer is the hidden screen, and the layer's opacity fader is that
