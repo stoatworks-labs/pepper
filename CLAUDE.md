@@ -4,8 +4,8 @@ Pepper's ghost for Resolume Arena/Avenue: a clear sheet at an angle reflecting
 a hidden screen over the stage behind it, traced per pixel in linear light. It
 ships as two FFGL plugins from one core, written in C++/GLSL, built with CMake
 as MODULEs into two universal `.bundle`s (macOS). MIT. **v0.1.0,
-public at github.com/stoatworks-labs/pepper.** Never loaded into Resolume on
-macOS.
+public at github.com/stoatworks-labs/pepper.** Loaded in Resolume Arena 7.27.1
+on Windows (AGENTS.md, "What Pepper showed in Arena"), never on macOS.
 
 | | id | display name | bundle | type |
 | --- | --- | --- | --- | --- |
@@ -159,7 +159,9 @@ control (`SetFaultForTest`).
   `scripts/build_guides.py pepper`.
 
 ## Not done yet
-- Never loaded into Resolume on macOS.
+- Never loaded into Resolume on macOS. On Windows (Arena 7.27.1, llvmpipe) the
+  Feed passed the Arena gate and the mixer was probed by REST and its log; no
+  frame of the mixer's picture there has been captured.
 - CI (`.github/workflows/ci.yml`) builds macOS and Windows on every push and
   runs the GL-free checks (`--list`, `--names`, glslc). The pixel checks need
   a GPU and run only in `verify.sh`. `release.yml` builds the four release

@@ -13,7 +13,10 @@ built with CMake into two universal macOS `.bundle`s. MIT.
 **Status, 2026-11-02:** v0.1.0, released on Allan's go-ahead ("Yes, release
 Pepper"), public at https://github.com/stoatworks-labs/pepper.
 
-- It has **never been loaded into Resolume on macOS**.
+- It has **never been loaded into Resolume on macOS**. On Windows, a CI build
+  was loaded into Resolume Arena 7.27.1 on win-lab (software rendering, no
+  GPU): the Feed passed the fleet's Arena gate twice, and the mixer was probed
+  by hand ("What Pepper showed in Arena").
 - It started in tranche four, from IDEAS.md. The spec is
   `~/Projects/resolume/specs/SPEC-pepper.md`.
 
@@ -33,7 +36,8 @@ Lenticular showed in Arena". That covers:
 - index 0 is hidden;
 - `Opacity` is bound to the layer fader and ramped by transitions.
 
-Nothing here contradicts them, and **none of it was re-measured on this plugin**.
+Nothing here contradicts them, and all three were measured again on this
+plugin, on Windows ("What Pepper showed in Arena").
 
 ---
 
@@ -592,14 +596,11 @@ These are the README's Status table, from `pgtest`, `tools/mutate.sh`,
 
 **Assumed, not measured here:**
 
-- **Everything about Resolume.** That Arena:
-  - loads both bundles from Extra Effects;
-  - offers SW Pepper as a Blend Mode;
-  - hides Linear Light;
-  - drives Opacity from the fader.
-
-  These are the fleet's measurements on genlock, wipe, relay and lenticular,
-  not on this plugin.
+- **Resolume on macOS, and any picture of the mixer in Resolume.** On Windows,
+  Arena 7.27.1 loads both plugins, offers SW Pepper as a Blend Mode, hides
+  Linear Light and drives Opacity from the fader ("What Pepper showed in
+  Arena"). Nothing has run on macOS Resolume, and no frame of SW Pepper's
+  output in Arena was captured.
 - **The optics, as stated.** The harness proves that the plugin computes the
   model correctly, not that the model is the world:
   - the indices;
@@ -614,6 +615,55 @@ These are the README's Status table, from `pgtest`, `tools/mutate.sh`,
 - That the generated cards stand for real footage. The figures are the
   harness's cards, not Resolume's demo media.
 
+## What Pepper showed in Arena
+
+A CI build of v0.1.0's source (release.yml dispatched on main at 40d3a05, run
+41527099652) in **Resolume Arena 7.27.1** (build 15990) on win-lab — Windows
+x64, Mesa llvmpipe 26.2.0, no GPU — on 2026-11-02.
+
+- **Both load from Extra Effects.** Arena's log registers `'SW Pepper' uid: PG01
+  category: 2` and `'SW Pepper Feed' uid: PG02 category: 1`, then `Created
+  Pepper mixer` and `Created Pepper Feed effect`. The diag log shows `host=Resolume
+  Arena version=7.27.1 15990`, `GL vendor=Mesa renderer=llvmpipe ... 4.5 (Core
+  Profile)` and `initialised`, so both shaders compiled on Mesa. No error line
+  from either plugin in either log.
+- **SW Pepper Feed passed the fleet's Arena gate twice, 9 of 9**
+  (plugin-bench `arena/expect/pepper.json`): its 9 controls as declared (Arena's
+  Opacity, Sides, Centre, Mount, the About block), the names complete, a picture
+  that is not its input (57,598 pixels of the still 79.7 levels away at the
+  defaults), and all 4 controls moving it.
+- **SW Pepper can't be gated** (the gate mounts effects and sources only), so it
+  was probed by hand over REST, relay's recipe: the carrier still on layer 2 and
+  on layer 3, both connected, SW Pepper as layer 3's Blend Mode. The answers:
+  1. **Offered as a Blend Mode and as a transition**, by name, among 61.
+  2. **Linear Light (index 0) is hidden. Five mixers for five.** The mixer's
+     REST panel carries 30 of the 31 declared parameters (Tint as its three
+     channels), and the missing one is Linear Light, parked there on purpose.
+  3. **Opacity is the layer's fader, from inside the plugin.** Layer opacity
+     0.2, 0.85, 0.5 and 1.0 read back as the mixer's Opacity, and the diag log
+     recorded `Opacity 0.200000 at frame 8`, `0.850000 at frame 17`, `0.500000
+     at frame 27`, `1.000000 at frame 37` (instance #2). A REST write of 0.15 to
+     the mixer's own Opacity reached the plugin for exactly one frame (`0.150000
+     at frame 47`, then `1.000000 at frame 48`) and read back 1.0, the fader's.
+  4. **Its own controls take writes.** Rig, Sheet, Polarisation and Sheet Angle,
+     written over REST, read back as written.
+  5. **A layer transition ramps Opacity.** With SW Pepper as layer 3's
+     transition blend mode and duration 2 s, connecting another clip made a
+     separate instance (#3, its own `Created Pepper mixer` line) whose Opacity
+     went 0.042, then (a second connect restarting it) 0.003, 0.252, 0.512,
+     0.769, at llvmpipe's 2 fps or so. Arena never sent 1.0. So a transition
+     through SW Pepper brings the new clip in as a ghost over the old one,
+     brightening, and then cuts to the plain new clip: the old clip, the
+     "stage", vanishes at the end in one frame. Inferred from the numbers, not
+     seen.
+- Both inputs arrive padded, `Dest 1280x720 of 1280x768, Src 1280x720 of
+  1280x768, out 1280x720`, as genlock measured; each is fetched through its own
+  MaxUV (`--mixer`).
+- **Not established:** no frame of SW Pepper's output in Arena was captured
+  (Arena's REST serves no mixer picture), so a correct ghost in Resolume is not
+  claimed; the harness's pictures are. Nothing has run in Resolume on macOS or on
+  a GPU.
+
 ## Open questions
 
 - **Does a rotated-copies feed read mirrored in a real pyramid?** The geometry
@@ -623,6 +673,11 @@ These are the README's Status table, from `pgtest`, `tools/mutate.sh`,
   dioxide, from published indices. Does a real Musion-style foil reflect what
   either gives at some thickness? A measured reflectance at 45° would pin it.
 - **Haze**: worth the second pass it would take (Not modelled, above)?
+- **A transition's last frame.** Arena never handed a transition's SW Pepper
+  1.0 (0.769 was its last, "What Pepper showed in Arena"), and then the layer
+  shows the new clip without the mixer: the stage vanishes in one frame. Fine
+  for a blend mode, which is what Pepper is for; worth a line in the guide, or
+  an end stop, if anyone uses it as a transition.
 
 ## Notes
 

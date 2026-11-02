@@ -18,8 +18,11 @@
 > - the foil's wobble peaks at **six of six** membrane mode frequencies,
 >   measured by FFT.
 >
-> See [Status](#status). It has **never been loaded into Resolume**, on any
-> platform. Check it in your own rig before trusting it in a show.
+> See [Status](#status). It has **never been loaded into Resolume on macOS**.
+> On Windows, Resolume Arena 7.27.1 (software rendering, no GPU) loads both
+> plugins, offers SW Pepper as a Blend Mode, hides Linear Light and drives its
+> Opacity from the layer fader, and SW Pepper Feed passes the fleet's Arena
+> gate. Check it in your own rig before trusting it in a show.
 
 Pepper's ghost — a sheet of glass or foil reflecting a hidden screen over the
 stage behind it — as an FFGL **mixer** for [Resolume](https://resolume.com)
@@ -40,6 +43,9 @@ is no ghost.</sub>
 | --- | --- | --- | --- | --- |
 | the pane, the foil and the pyramid, seen | `PG01` | `SW Pepper` | `Pepper.bundle`, `com.stoatworks.ffgl.pepper` | **mixer** |
 | the cross layout a real pyramid is fed | `PG02` | `SW Pepper Feed` | `PepperFeed.bundle`, `com.stoatworks.ffgl.pepperfeed` | effect |
+
+There's a [user guide](https://stoatworks-labs.com/software/pepper/guide/), also as
+[docs/USER-GUIDE.md](docs/USER-GUIDE.md).
 
 <!-- downloads:start -->
 <!-- downloads:end -->
@@ -326,17 +332,20 @@ the GPU and on Apple's software renderer:
 | Host metadata | `oxbow probe` reads **SW Pepper / PG01 / mixer / inputs 2..2**, parameter 0 **Linear Light**, and **SW Pepper Feed / PG02 / effect / 1..1**; oxbow's selftest renders the feed and is refused by the mixer (one input) |
 | Render cost | one 30-frame run at shipped defaults (the PET foil, rippling), `glFinish` both sides, on a shared machine with other sessions' checks running: the pane **0.07 / 0.21 / 0.39 ms** a frame at 720p / 1080p / 4K, the pyramid **0.06 / 0.08 / 0.31 ms** — 2.3 % of a 60 fps frame at most. Not asserted; another GPU will differ |
 | macOS binary | universal (`x86_64 arm64`), both bundles export `plugMain` and ad-hoc sign |
+| Resolume Arena, Windows | the release workflow's build of 40d3a05 in Arena 7.27.1 on Windows x64, Mesa llvmpipe, no GPU: both plugins load and register (PG01 as a mixer, PG02 as an effect) and their shaders compile; SW Pepper Feed passes the fleet's Arena gate **twice, 9 of 9**, all 4 of its controls moving Arena's picture; SW Pepper, probed over REST, is offered as a Blend Mode and a transition, exposes **30 of 31** parameters (Linear Light hidden), and its Opacity follows the layer fader at 0.2, 0.85, 0.5 and 1.0, read back and logged by the plugin, a REST write to it overridden. [AGENTS.md](AGENTS.md#what-pepper-showed-in-arena) has the logs |
 
 Run `tools/verify.sh` before believing any of it.
 
 **What is not done.**
 
-- Pepper has **never been loaded into Resolume**, on any platform. Nothing here
-  shows Arena accepting it, hiding Linear Light, or driving Opacity from the
-  fader on this plugin. Those are the fleet's measurements on other mixers.
-- The Windows build is compiled by CI (`release.yml`) and checked by
-  `tools/wincheck.ps1` for what a host reads first; no pixel of it has been
-  checked on Windows.
+- Pepper has **never been loaded into Resolume on macOS**, or on any GPU.
+- **No frame of SW Pepper's output in Resolume has been captured.** Arena's REST
+  API serves no picture of a mixer, so the Windows probe shows it loading,
+  compiling and taking its controls, not drawing the right ghost. The ghost is
+  measured in the harness only. SW Pepper Feed's picture was captured there.
+- A layer transition through SW Pepper ramps its Opacity, but Arena never sent
+  it 1.0, so a transition ends by cutting from ghost-over-stage to the plain new
+  clip. It's meant as a blend mode.
 - The harness has run on two rasterisers, this Mac's GPU and Apple's software
   renderer. No other has run it.
 
