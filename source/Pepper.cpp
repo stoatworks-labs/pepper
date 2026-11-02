@@ -1,5 +1,6 @@
 #include "Pepper.h"
 
+#include "Coating.h"
 #include "Controls.h"
 #include "Diag.h"
 #include "Shaders.h"
@@ -34,11 +35,6 @@ constexpr int kOpacityLines = 400;
 /// the layer's mixer from a transition's (Arena makes separate instances).
 int gInstances = 0;
 
-/// The smallest contribution a ray is followed for, in linear light: under
-/// half an 8-bit code even at black, where sRGB is steepest (1/8192 x 12.92
-/// x 255 = 0.40 codes).
-constexpr double kPruneLight = 1.0 / 8192.0;
-
 void setVec3( GLint location, const rig::Vec3& v )
 {
 	glUniform3f( location, static_cast< float >( v.x ), static_cast< float >( v.y ), static_cast< float >( v.z ) );
@@ -62,16 +58,20 @@ Pepper::Pepper()
 	params[ PT_SOURCE_LEVEL ] = ParamForSourceStops( kSourceStopsDefault );
 	params[ PT_SOURCE_BLACK ] = 0.0f;
 	params[ PT_POLARISATION ] = 0.0f;
+	params[ PT_VIEW_ANGLE ]   = ParamForViewAngle( kViewAngleDefaultDeg * kPi / 180.0 );
 	params[ PT_STAGE_LEVEL ]  = ParamForStageStops( kStageStopsDefault );
 	params[ PT_SPILL ]        = 0.0f;
 
 	params[ PT_RIG ]         = 0.0f;
+	params[ PT_MOUNT ]       = 0.0f;
 	params[ PT_SHEET_ANGLE ] = ParamForSheetAngle( kSheetAngleDefaultDeg * kPi / 180.0 );
 	params[ PT_SIDES ]       = 0.0f;
 	params[ PT_CENTRE ]      = ParamForCentre( kCentreDefault );
 	params[ PT_SCREEN ]      = 0.0f;
 
-	params[ PT_SHEET ]        = 0.0f;
+	params[ PT_SHEET ]          = 0.0f;
+	params[ PT_COATING ]        = 0.0f;
+	params[ PT_COAT_THICKNESS ] = static_cast< float >( kCoatThicknessDefault );
 	params[ PT_THICKNESS ]    = 0.0f;
 	params[ PT_TINT_R ]       = 1.0f;
 	params[ PT_TINT_G ]       = 1.0f;
@@ -101,12 +101,18 @@ Pepper::Pepper()
 	SetParamElementInfo( PT_POLARISATION, 0, "None", 0.0f );
 	SetParamElementInfo( PT_POLARISATION, 1, "Horizontal", 1.0f );
 	SetParamElementInfo( PT_POLARISATION, 2, "Vertical", 2.0f );
+	SetParamElementInfo( PT_POLARISATION, 3, "45 Degrees", 3.0f );
+	SetParamElementInfo( PT_POLARISATION, 4, "135 Degrees", 4.0f );
+	SetParamInfof( PT_VIEW_ANGLE, "Viewing Angle", FF_TYPE_STANDARD );
 	SetParamInfof( PT_STAGE_LEVEL, "Stage Level", FF_TYPE_STANDARD );
 	SetParamInfof( PT_SPILL, "Spill", FF_TYPE_STANDARD );
 
 	SetOptionParamInfo( PT_RIG, "Rig", static_cast< unsigned >( RigKind::Count ), 0.0f );
 	SetParamElementInfo( PT_RIG, 0, "Pane", 0.0f );
 	SetParamElementInfo( PT_RIG, 1, "Pyramid", 1.0f );
+	SetOptionParamInfo( PT_MOUNT, "Mount", static_cast< unsigned >( MountKind::Count ), 0.0f );
+	SetParamElementInfo( PT_MOUNT, 0, "Screen Below", 0.0f );
+	SetParamElementInfo( PT_MOUNT, 1, "Screen Above", 1.0f );
 	SetParamInfof( PT_SHEET_ANGLE, "Sheet Angle", FF_TYPE_STANDARD );
 	SetOptionParamInfo( PT_SIDES, "Sides", 2, 0.0f );
 	SetParamElementInfo( PT_SIDES, 0, "Four", 0.0f );
@@ -119,6 +125,10 @@ Pepper::Pepper()
 	SetOptionParamInfo( PT_SHEET, "Sheet", static_cast< unsigned >( SheetKind::Count ), 0.0f );
 	for( int k = 0; k < static_cast< int >( SheetKind::Count ); ++k )
 		SetParamElementInfo( PT_SHEET, static_cast< unsigned >( k ), NameOf( static_cast< SheetKind >( k ) ), static_cast< float >( k ) );
+	SetOptionParamInfo( PT_COATING, "Coating", static_cast< unsigned >( CoatingKind::Count ), 0.0f );
+	for( int k = 0; k < static_cast< int >( CoatingKind::Count ); ++k )
+		SetParamElementInfo( PT_COATING, static_cast< unsigned >( k ), NameOf( static_cast< CoatingKind >( k ) ), static_cast< float >( k ) );
+	SetParamInfof( PT_COAT_THICKNESS, "Coat Thickness", FF_TYPE_STANDARD );
 	SetParamInfof( PT_THICKNESS, "Thickness", FF_TYPE_STANDARD );
 	//Three typed channels in a row is how a host knows to show one colour
 	//picker; burin's names.
@@ -182,6 +192,19 @@ FFResult Pepper::InitGL( const FFGLViewportStruct* vp )
 		DeInitGL();
 		return FF_FAIL;
 	}
+
+	//The coat's table: float texels, read with texelFetch, so no filtering
+	//and no mipmaps. Filled on the first frame that has a coat.
+	glGenTextures( 1, &coatTexture );
+	{
+		Scoped2DTextureBinding bind( coatTexture );
+		glTexImage2D( GL_TEXTURE_2D, 0, GL_RGBA32F, coat::kSize, coat::kRows, 0, GL_RGBA, GL_FLOAT, nullptr );
+		glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
+		glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
+		glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+		glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+	}
+	coatKey[ 0 ] = coatKey[ 1 ] = coatKey[ 2 ] = -1;
 
 	diag::info( "initialised, viewport " + std::to_string( vp ? vp->width : 0 ) + "x" + std::to_string( vp ? vp->height : 0 )
 	            + " (instance #" + std::to_string( instance ) + ")" );
@@ -279,6 +302,12 @@ FFResult Pepper::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 	in.spill             = SpillFromParam( params[ PT_SPILL ] );
 	in.stageGain         = StageGainFromParam( params[ PT_STAGE_LEVEL ] );
 	in.polarisation      = OptionIndex( params[ PT_POLARISATION ], static_cast< int >( Polarisation::Count ) );
+	in.viewAngle         = ViewAngleFromParam( params[ PT_VIEW_ANGLE ] );
+	in.mount             = OptionIndex( params[ PT_MOUNT ], static_cast< int >( MountKind::Count ) );
+	in.coating           = OptionIndex( params[ PT_COATING ], static_cast< int >( CoatingKind::Count ) );
+	in.coatNm            = CoatThicknessNm( static_cast< CoatingKind >( in.coating ), params[ PT_COAT_THICKNESS ] );
+	in.aboveAsBelow      = ( fault & kFaultAboveAsBelow ) != 0;
+	in.clockwise         = ( fault & kFaultClockwise ) != 0;
 	in.linearLight       = params[ PT_LINEAR_LIGHT ] > 0.5f;
 	in.srcAspect         = static_cast< double >( src.Width ) / src.Height;
 	in.outAspect         = static_cast< double >( outW ) / outH;
@@ -291,15 +320,26 @@ FFResult Pepper::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 	// Bind both inputs. The declaration ORDER matters: every
 	// ffglex::Scoped* clears its binding on exit rather than restoring it,
 	// so they must unwind as activate(1), bind(1) then activate(0), bind(0).
+	//
+	// The coat's table goes on unit 2 BY HAND, after them: a third scoped
+	// pair would unwind with unit 0 active and leave unit 1 bound to Src.
+	// So it is bound last and unbound first, and unit 1 is made active
+	// again before the scoped objects unwind (pgtest --mixer checks that
+	// all three units come back empty, with unit 0 active).
 	//-----------------------------------------------------------------
 	ScopedShaderBinding shaderBinding( shader.GetGLID() );
 	ScopedSamplerActivation activateDest( 0 );
 	Scoped2DTextureBinding bindDest( dest.Handle );
 	ScopedSamplerActivation activateSrc( 1 );
 	Scoped2DTextureBinding bindSrc( src.Handle );
+	glActiveTexture( GL_TEXTURE0 + 2 );
+	glBindTexture( GL_TEXTURE_2D, coatTexture );
+	UpdateCoatTable( s );
 
 	shader.Set( "TextureDest", 0 );
 	shader.Set( "TextureSrc", 1 );
+	shader.Set( "CoatTable", 2 );
+	shader.Set( "Coated", s.coating != static_cast< int >( CoatingKind::None ) ? 1 : 0 );
 
 	//One MaxUV per input. They are different numbers whenever the two
 	//layers are different sizes, which for a mixer is the normal case.
@@ -359,6 +399,8 @@ FFResult Pepper::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 	shader.Set( "ScreenRect", static_cast< float >( s.xMin ), static_cast< float >( s.xMax ), static_cast< float >( s.zMin ),
 	            static_cast< float >( s.zMax ) );
 	setVec3( shader.FindUniform( "SourceE" ), s.polarisation );
+	shader.Set( "Falloff", static_cast< float >( s.falloff ) );
+	shader.Set( "FeedFlip", s.feedFlip ? 1 : 0 );
 
 	float axes[ 16 ] = {};
 	for( int j = 0; j < s.sides; ++j )
@@ -375,7 +417,11 @@ FFResult Pepper::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 	shader.Set( "FeedArm", static_cast< float >( s.armW ), static_cast< float >( s.armD ) );
 	glUniform4fv( shader.FindUniform( "FeedAxis" ), 4, axes );
 
-	shader.Set( "Eta", static_cast< float >( s.eta ) );
+	//The --fresnel negative control: green's index for every channel.
+	const bool oneIndex = ( fault & kFaultOneIndex ) != 0;
+	shader.Set( "Eta", static_cast< float >( oneIndex ? s.etaRay : s.eta[ 0 ] ), static_cast< float >( s.eta[ 1 ] ),
+	            static_cast< float >( oneIndex ? s.etaRay : s.eta[ 2 ] ) );
+	shader.Set( "EtaRay", static_cast< float >( s.etaRay ) );
 	shader.Set( "Thickness", static_cast< float >( s.thickness ) );
 	shader.Set( "Tint", static_cast< float >( s.tint[ 0 ] ), static_cast< float >( s.tint[ 1 ] ), static_cast< float >( s.tint[ 2 ] ) );
 
@@ -397,7 +443,29 @@ FFResult Pepper::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 
 	quad.Draw();
 
+	if( ( fault & kFaultLeaveBound ) == 0 )
+	{
+		glBindTexture( GL_TEXTURE_2D, 0 );
+		glActiveTexture( GL_TEXTURE0 + 1 );
+	}
 	return FF_SUCCESS;
+}
+
+void Pepper::UpdateCoatTable( const rig::Setup& s )
+{
+	if( s.coating == static_cast< int >( CoatingKind::None ) )
+		return;
+	const int incoherent = ( fault & kFaultCoatIncoherent ) != 0 ? 1 : 0;
+	const int sheet      = OptionIndex( params[ PT_SHEET ], static_cast< int >( SheetKind::Count ) );
+	const float nm       = static_cast< float >( s.coatNm );
+	if( coatKey[ 0 ] == s.coating && coatKey[ 1 ] == sheet && coatKey[ 2 ] == incoherent && coatKeyNm == nm )
+		return;
+	coat::BuildTable( static_cast< CoatingKind >( s.coating ), s.coatNm, s.eta, incoherent != 0, coatData );
+	glTexSubImage2D( GL_TEXTURE_2D, 0, 0, 0, coat::kSize, coat::kRows, GL_RGBA, GL_FLOAT, coatData.data() );
+	coatKey[ 0 ] = s.coating;
+	coatKey[ 1 ] = sheet;
+	coatKey[ 2 ] = incoherent;
+	coatKeyNm    = nm;
 }
 
 //---------------------------------------------------------------------------
@@ -408,6 +476,11 @@ FFResult Pepper::DeInitGL()
 		            + " (instance #" + std::to_string( instance ) + ")" );
 	shader.FreeGLResources();
 	quad.Release();
+	if( coatTexture != 0 )
+	{
+		glDeleteTextures( 1, &coatTexture );
+		coatTexture = 0;
+	}
 	return FF_SUCCESS;
 }
 

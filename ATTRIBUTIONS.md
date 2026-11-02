@@ -104,6 +104,24 @@ Arrives inside the FFGL submodule, under the SDK's CustomThumbnail sample.
 
 Part of the upstream SDK tree rather than something these plugins call directly — listed because it is present in the checkout.
 
+## Data
+
+### Optical constants of the sheets and coats — refractiveindex.info
+
+<https://refractiveindex.info>  
+Licence: CC0 1.0  
+Copyright: Mikhail N. Polyanskiy (database); the measurements are the authors' below
+
+source/Controls.cpp evaluates each at the three channels' wavelengths (611.3, 549.1 and 464.3 nm):
+
+- aluminium: A. D. Rakić et al., Appl. Opt. 37, 5271 (1998), the Lorentz–Drude fit for the bulk metal;
+- titanium dioxide: T. Siefke et al., Adv. Opt. Mater. 4, 1780 (2016), an atomic-layer-deposited film;
+- soda-lime float glass: M. Rubin, Sol. Energy Mater. 12, 275 (1985);
+- PMMA (acrylic) and polycarbonate: N. Sultanova, S. Kasarova and I. Nikolov, Acta Phys. Pol. A 116, 585 (2009);
+- PET: the dispersion slope of a Cauchy fit to Zhang et al., Appl. Opt. 59, 2337 (2020), set to 1.65 at the d line.
+
+No foil maker's data is used, and no coated product's reflectance is claimed.
+
 ## Inspirations
 
 What this set out to be. No code, assets or binaries from any of these were used or examined — the debt is to the idea.
@@ -114,6 +132,10 @@ Implemented from textbook optics:
 
 - Fresnel's equations for a smooth dielectric surface, and Snell's law;
 - the multiple-reflection series of a slab;
+- Airy's summation for one thin film, and the characteristic matrix of thin-film optics (the harness's check on it);
+- the coherency matrix and Jones calculus, for polarised light through successive surfaces;
+- the generalised Lambertian, cos^p, for a screen's falloff;
+- the dominant wavelengths of the BT.709 primaries against D65, from the CIE 1931 observer;
 - Brewster's angle;
 - Abelès' identity R_p = R_s² at 45°;
 - the mirror image in a plane;

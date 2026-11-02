@@ -14,6 +14,7 @@
     One translation unit: main.cpp includes this once.
 */
 
+#include "Coating.h"
 #include "Controls.h"
 #include "Feed.h"
 #include "Names.h"
@@ -28,6 +29,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <complex>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -921,6 +923,243 @@ double filmT( double R, double tp = 1.0 )
 	return ( 1.0 - R ) * ( 1.0 - R ) * tp / ( 1.0 - R * R * tp * tp );
 }
 
+/// A coated surface, the harness's own way: Abeles' characteristic matrix
+/// for one layer, in Macleod's convention (N = n - i k; the tilted
+/// admittances eta_s = N cos, eta_p = N / cos, in units of free space's).
+/// A different formulation from the plugin's Airy sum (Coating.cpp), for
+/// the same physics: Macleod, Thin-Film Optical Filters, ch. 2.
+struct Coat
+{
+	double Rs = 0.0, Rp = 0.0;  ///< from the air
+	double Ris = 0.0, Rip = 0.0;///< from inside the sheet
+	double Ts = 0.0, Tp = 0.0;  ///< from the air into the sheet
+	double Tis = 0.0, Tip = 0.0;///< from the sheet into the air
+};
+
+/// The layer's amplitudes in Macleod's own terms: r and t of the
+/// TANGENTIAL field, s then p, from the air and from inside the sheet; and
+/// N cos( theta ) in the air and the sheet.
+struct Macleod
+{
+	std::complex< double > r[ 2 ], t[ 2 ], ri[ 2 ], ti[ 2 ];
+	std::complex< double > x0, xs;
+};
+
+/// air | layer (n - i k, d nm) | sheet (ns), at cos( incidence ) in the
+/// air, for light of wavelength lambda nm.
+Macleod macleodAt( double cosi, double n, double k, double d, double ns, double lambda )
+{
+	using C         = std::complex< double >;
+	cosi            = std::clamp( cosi, 1e-9, 1.0 );
+	const double S2 = 1.0 - cosi * cosi;
+	const C N1( n, -k ), Ns( ns, 0.0 );
+	//N cos( theta ) by Snell's invariant, the root that decays into an
+	//absorber: Im <= 0 in this convention.
+	auto across = [ & ]( C N ) {
+		C x = std::sqrt( N * N - S2 );
+		return x.imag() > 0.0 ? -x : x;
+	};
+	Macleod m;
+	m.x0          = cosi;
+	m.xs          = across( Ns );
+	const C x1    = across( N1 );
+	const C delta = 2.0 * kPi * d * x1 / lambda;
+	const C cd = std::cos( delta ), sd = std::sin( delta ), i( 0.0, 1.0 );
+	for( int pol = 0; pol < 2; ++pol )
+	{
+		//s: eta = N cos; p: eta = N / cos = N^2 / ( N cos ).
+		const C e0 = pol == 0 ? m.x0 : 1.0 / m.x0;
+		const C e1 = pol == 0 ? x1 : N1 * N1 / x1;
+		const C es = pol == 0 ? m.xs : Ns * Ns / m.xs;
+		//[B; C] = M [1; eta_exit], M = [cos d, i sin d / e1; i e1 sin d, cos d];
+		//r = ( eta_in B - C ) / ( eta_in B + C ), t = 2 eta_in / ( eta_in B + C ).
+		auto rt = [ & ]( C in, C exit, C& r, C& t ) {
+			const C B  = cd + i * sd * exit / e1;
+			const C Cc = i * e1 * sd + cd * exit;
+			r          = ( in * B - Cc ) / ( in * B + Cc );
+			t          = 2.0 * in / ( in * B + Cc );
+		};
+		rt( e0, es, m.r[ pol ], m.t[ pol ] );
+		rt( es, e0, m.ri[ pol ], m.ti[ pol ] );
+	}
+	return m;
+}
+
+Coat coatAt( double cosi, double n, double k, double d, double ns, double lambda )
+{
+	const Macleod m = macleodAt( cosi, n, k, d, ns, lambda );
+	//The power each way: |t|^2 Re( eta_exit ) / Re( eta_in ), in the tilted
+	//admittances, which for real media is n cos (s) or n / cos (p).
+	const double e0[ 2 ] = { m.x0.real(), 1.0 / m.x0.real() };
+	const double es[ 2 ] = { m.xs.real(), ( ns * ns / m.xs ).real() };
+	Coat out;
+	out.Rs  = std::norm( m.r[ 0 ] );
+	out.Rp  = std::norm( m.r[ 1 ] );
+	out.Ris = std::norm( m.ri[ 0 ] );
+	out.Rip = std::norm( m.ri[ 1 ] );
+	out.Ts  = std::norm( m.t[ 0 ] ) * es[ 0 ] / e0[ 0 ];
+	out.Tp  = std::norm( m.t[ 1 ] ) * es[ 1 ] / e0[ 1 ];
+	out.Tis = std::norm( m.ti[ 0 ] ) * e0[ 0 ] / es[ 0 ];
+	out.Tip = std::norm( m.ti[ 1 ] ) * e0[ 1 ] / es[ 1 ];
+	return out;
+}
+
+//---------------------------------------------------------------------------
+// Polarised light, the harness's own way: amplitudes in Born & Wolf's
+// convention, and each ray's response as a 3x3 Hermitian matrix in world
+// space. (The plugin keeps a 2x2 in a basis it carries along the ray.)
+//---------------------------------------------------------------------------
+using Cx = std::complex< double >;
+
+/// One surface's amplitudes, Born & Wolf's convention: p = s x k on both
+/// sides of the surface, so face on r_p = -r_s; fields exp( i ( k z - w t ) ).
+/// t is normalised so that |t|^2 is the transmittance.
+struct Amp
+{
+	Cx rs, rp;  ///< from the air
+	Cx ris, rip;///< from inside the sheet
+	Cx ts, tp;  ///< from the air into the sheet
+	Cx tis, tip;///< from the sheet into the air: the same, by reciprocity
+};
+
+Amp bareAmp( double cosi, double n )
+{
+	const double cost = std::sqrt( std::max( 0.0, 1.0 - ( 1.0 - cosi * cosi ) / ( n * n ) ) );
+	const double rs   = ( cosi - n * cost ) / ( cosi + n * cost );
+	const double rp   = ( n * cosi - cost ) / ( n * cosi + cost );
+	const double ts = std::sqrt( 1.0 - rs * rs ), tp = std::sqrt( 1.0 - rp * rp );
+	return { rs, rp, -rs, -rp, ts, tp, ts, tp };
+}
+
+/// A coated surface's, from macleodAt: conjugated (his fields go as
+/// exp( i ( w t - k z ) ), with N = n - i k); r_p negated, since his p
+/// amplitudes are the tangential field's, measured the same way along the
+/// surface for the incident and the reflected wave, where p = s x k turns
+/// over; t_p carried from the tangential field to the whole by the ratio of
+/// cosines; t normalised by sqrt( n_out cos_out / n_in cos_in ).
+Amp coatAmp( double cosi, double n, double k, double d, double ns, double lambda )
+{
+	const Macleod m   = macleodAt( cosi, n, k, d, ns, lambda );
+	const double c0   = m.x0.real();
+	const double cs   = m.xs.real() / ns;
+	const double norm = std::sqrt( m.xs.real() / c0 );
+	Amp a;
+	a.rs  = std::conj( m.r[ 0 ] );
+	a.rp  = -std::conj( m.r[ 1 ] );
+	a.ris = std::conj( m.ri[ 0 ] );
+	a.rip = -std::conj( m.ri[ 1 ] );
+	a.ts  = std::conj( m.t[ 0 ] ) * norm;
+	a.tp  = std::conj( m.t[ 1 ] ) * ( c0 / cs ) * norm;
+	a.tis = std::conj( m.ti[ 0 ] ) / norm;
+	a.tip = std::conj( m.ti[ 1 ] ) * ( cs / c0 ) / norm;
+	return a;
+}
+
+/// What one film does to a ray's response, one channel: the s and p
+/// intensities and the s-p cross term sum conj( x_s ) x_p, each summed over
+/// the echoes inside the sheet, incoherently (it is thick next to the
+/// light's coherence length; s and p share each echo's bulk phase).
+struct Weigh
+{
+	double s = 0.0, p = 0.0;
+	Cx c;
+};
+
+/// Reflection: F the surface on the side the light arrives and leaves by,
+/// B the far one; tau the bulk's one pass, in intensity.
+Weigh filmReflection( const Amp& F, const Amp& B, double tau )
+{
+	//One round trip inside, in amplitude: r'_F r'_B sqrt( tau )^2.
+	const Cx es = F.ris * B.ris * tau, ep = F.rip * B.rip * tau;
+	const Cx xs = F.ts * F.tis * B.ris * tau, xp = F.tp * F.tip * B.rip * tau;
+	Weigh w;
+	w.s = std::norm( F.rs ) + std::norm( xs ) / ( 1.0 - std::norm( es ) );
+	w.p = std::norm( F.rp ) + std::norm( xp ) / ( 1.0 - std::norm( ep ) );
+	w.c = std::conj( F.rs ) * F.rp + std::conj( xs ) * xp / ( 1.0 - std::conj( es ) * ep );
+	return w;
+}
+
+/// Transmission, either way through (it is reciprocal).
+Weigh filmTransmission( const Amp& F, const Amp& B, double tau )
+{
+	const Cx es = F.ris * B.ris * tau, ep = F.rip * B.rip * tau;
+	const Cx xs = F.ts * B.tis * std::sqrt( tau ), xp = F.tp * B.tip * std::sqrt( tau );
+	Weigh w;
+	w.s = std::norm( xs ) / ( 1.0 - std::norm( es ) );
+	w.p = std::norm( xp ) / ( 1.0 - std::norm( ep ) );
+	w.c = std::conj( xs ) * xp / ( 1.0 - std::conj( es ) * ep );
+	return w;
+}
+
+/// A ray's response, one channel: the eye sees a unit source field e at the
+/// ray's far end as e^H M e. M starts as the projector across the camera
+/// ray and is carried back through each interaction as M' = J^H M J, J the
+/// interaction's Jones matrix in world space,
+///     J = x_s s s^T + x_p p_out p_in^T,
+/// p_in = s x k before it and p_out = s x k after, k the light's direction;
+/// summed over the echoes, through Weigh.
+struct Response
+{
+	Cx m[ 3 ][ 3 ] = {};
+};
+
+inline double comp( Vec3 v, int i )
+{
+	return i == 0 ? v.x : ( i == 1 ? v.y : v.z );
+}
+
+/// a^T M b, for real a and b.
+Cx sandwich( const Response& M, Vec3 a, Vec3 b )
+{
+	Cx sum = 0.0;
+	for( int i = 0; i < 3; ++i )
+		for( int j = 0; j < 3; ++j )
+			sum += comp( a, i ) * M.m[ i ][ j ] * comp( b, j );
+	return sum;
+}
+
+Response through( const Response& M, Vec3 s, Vec3 pIn, Vec3 pOut, const Weigh& w )
+{
+	const Cx ss = sandwich( M, s, s ), pp = sandwich( M, pOut, pOut ), sp = sandwich( M, s, pOut );
+	Response out;
+	for( int i = 0; i < 3; ++i )
+		for( int j = 0; j < 3; ++j )
+		{
+			const double si = comp( s, i ), sj = comp( s, j ), pi = comp( pIn, i ), pj = comp( pIn, j );
+			out.m[ i ][ j ] = w.s * ss * si * sj + w.p * pp * pi * pj + w.c * sp * si * pj + std::conj( w.c * sp ) * pi * sj;
+		}
+	return out;
+}
+
+/// The most the ray could deliver: M's larger eigenvalue, across the ray.
+double largest( const Response& M, Vec3 d )
+{
+	Vec3 u = std::fabs( d.y ) < 0.9 ? rig::cross( d, Vec3 { 0, 1, 0 } ) : rig::cross( d, Vec3 { 1, 0, 0 } );
+	u            = rig::normalize( u );
+	const Vec3 v = rig::cross( d, u );
+	const double a = sandwich( M, u, u ).real(), b = sandwich( M, v, v ).real();
+	const Cx c     = sandwich( M, u, v );
+	return 0.5 * ( a + b ) + std::sqrt( 0.25 * ( a - b ) * ( a - b ) + std::norm( c ) );
+}
+
+/// A sheet's two surfaces, added in intensity (it is thick next to the
+/// light's coherence length): F the surface a ray meets first, B the far
+/// one, each as seen from inside where it says so; tau the bulk's one pass.
+struct Faces
+{
+	double RF = 0.0, RFi = 0.0, TF = 1.0, RBi = 0.0, TB = 1.0;
+};
+
+double slabR( const Faces& f, double tau = 1.0 )
+{
+	return f.RF + f.TF * f.TF * f.RBi * tau * tau / ( 1.0 - f.RFi * f.RBi * tau * tau );
+}
+
+double slabT( const Faces& f, double tau = 1.0 )
+{
+	return f.TF * f.TB * tau / ( 1.0 - f.RFi * f.RBi * tau * tau );
+}
+
 double decodeSrgb( double c )
 {
 	c = std::clamp( c, 0.0, 1.0 );
@@ -930,12 +1169,15 @@ double decodeSrgb( double c )
 /// What the harness asked for, in the plugin's units, through Controls.h.
 struct Asked
 {
-	int rig = 0, sides = 4, screen = 0, sheet = 0, polarisation = 0;
+	int rig = 0, sides = 4, screen = 0, sheet = 0, polarisation = 0, mount = 0, coating = 0;
 	double angle = 0.0, centre = 0.3, thickness = 0.0, ripple = 0.0, rippleHz = 0.5;
 	double distance = 2.5, elevation = 0.0, azimuth = 0.0;
-	double eta = 1.5;
+	double viewAngle = kPi, coatNm = 0.0;
+	double eta[ 3 ] = { 1.5, 1.5, 1.5 };///< per channel, at kChannelNm
+	double etaRay = 1.5;                ///< the index the rays bend by: green's
 	double tint[ 3 ] = { 1.0, 1.0, 1.0 };
 	double sourceGain = 1.0, stageGain = 1.0, sourceBlack = 0.0, spill = 0.0;
+	double prune = kPruneLight;///< the least weight a ray is followed for
 	bool linearLight = true;
 };
 
@@ -956,7 +1198,13 @@ Asked asked( Pepper& p )
 	a.distance     = DistanceFromParam( v( Pepper::PT_DISTANCE ) );
 	a.elevation    = ElevationFromParam( v( Pepper::PT_ELEVATION ) );
 	a.azimuth      = AzimuthFromParam( v( Pepper::PT_AZIMUTH ) );
-	a.eta          = IndexOf( static_cast< SheetKind >( a.sheet ) );
+	a.mount        = OptionIndex( v( Pepper::PT_MOUNT ), static_cast< int >( MountKind::Count ) );
+	a.coating      = OptionIndex( v( Pepper::PT_COATING ), static_cast< int >( CoatingKind::Count ) );
+	a.coatNm       = CoatThicknessNm( static_cast< CoatingKind >( a.coating ), v( Pepper::PT_COAT_THICKNESS ) );
+	a.viewAngle    = ViewAngleFromParam( v( Pepper::PT_VIEW_ANGLE ) );
+	for( int c = 0; c < 3; ++c )
+		a.eta[ c ] = ChannelIndex( static_cast< SheetKind >( a.sheet ), c );
+	a.etaRay = a.eta[ kRayChannel ];
 	a.tint[ 0 ]    = v( Pepper::PT_TINT_R );
 	a.tint[ 1 ]    = v( Pepper::PT_TINT_G );
 	a.tint[ 2 ]    = v( Pepper::PT_TINT_B );
@@ -965,6 +1213,7 @@ Asked asked( Pepper& p )
 	a.sourceBlack  = SourceBlackFromParam( v( Pepper::PT_SOURCE_BLACK ) );
 	a.spill        = SpillFromParam( v( Pepper::PT_SPILL ) );
 	a.linearLight  = v( Pepper::PT_LINEAR_LIGHT ) > 0.5f;
+	a.prune        = kPruneLight / std::max( { SourceGainFromParam( v( Pepper::PT_SOURCE_LEVEL ) ), a.spill, a.stageGain, 1e-6 } );
 	return a;
 }
 
@@ -986,6 +1235,12 @@ struct World
 	double tanX = 0.0, tanY = 0.0;
 	std::vector< Sheet > sheets;
 	bool pane = true;
+	/// Mount Above, in the room as it stands: the screen overhead, facing
+	/// down, at the rig's top (the pane hangs from its back edge toward the
+	/// audience; the pyramid stands apex up under it). Below, the screen is
+	/// the floor, y = 0, facing up.
+	bool above     = false;
+	double screenY = 0.0;
 	double A = 16.0 / 9.0;///< Src's aspect
 	double xMin = 0, xMax = 0, zMin = 0, zMax = 0;
 	//The pyramid's feed.
@@ -999,7 +1254,8 @@ World worldFor( const Asked& a, int W, int H, double srcAspect )
 	w.W    = W;
 	w.H    = H;
 	w.A    = srcAspect;
-	w.pane = a.rig == static_cast< int >( RigKind::Pane );
+	w.pane  = a.rig == static_cast< int >( RigKind::Pane );
+	w.above = a.mount == static_cast< int >( MountKind::Above );
 	const double cosA = std::cos( a.angle ), sinA = std::sin( a.angle );
 	Vec3 target;
 	double rigSize = 1.0;
@@ -1007,12 +1263,15 @@ World worldFor( const Asked& a, int W, int H, double srcAspect )
 	{
 		//The floor screen, x in [-A/2, A/2], z in [0, 1]; the pane through
 		//the line y = 0, z = 0, leaning toward the audience at the angle.
+		//Above, the screen is the ceiling at y = 1 and the pane hangs from the
+		//line y = 1, z = 0, leaning toward the audience as it falls.
 		Sheet s;
-		s.origin = { 0, 0, 0 };
-		s.edge   = { 1, 0, 0 };
-		s.up     = { 0, sinA, cosA };
-		s.normal = { 0, -cosA, sinA };
-		s.half   = 0.5 * srcAspect + 1.0;
+		s.origin  = { 0, w.above ? 1.0 : 0.0, 0 };
+		s.edge    = { 1, 0, 0 };
+		s.up      = { 0, w.above ? -sinA : sinA, cosA };
+		s.normal  = { 0, w.above ? cosA : -cosA, sinA };//the screen's and the audience's side
+		w.screenY = w.above ? 1.0 : 0.0;
+		s.half    = 0.5 * srcAspect + 1.0;
 		s.length = 1.5 / cosA;
 		w.sheets.push_back( s );
 		w.xMin = -0.5 * srcAspect;
@@ -1032,19 +1291,25 @@ World worldFor( const Asked& a, int W, int H, double srcAspect )
 		w.r0              = 0.5 * a.centre;
 		rigSize           = 0.6 * 2.0 * 0.5 * tn;
 		target            = { 0, 0.5 * h, 0 };
+		//Above, apex up: the narrow end at the screen, y = h, the wide end
+		//at y = 0.
+		w.screenY = w.above ? h : 0.0;
 		for( int j = 0; j < n; ++j )
 		{
 			const double theta = 2.0 * kPi * j / n;
 			//Arm j points along rot(theta)(0, -1) in the picture; picture
-			//(x, y) is world (x, -z).
+			//(x, y) is world (x, -z) below, (-x, -z) above.
 			const Vec3 out     = { std::sin( theta ), 0, std::cos( theta ) };
 			const Vec3 lateral = { std::cos( theta ), 0, -std::sin( theta ) };
 			Sheet s;
-			s.origin            = out * w.r0;
+			s.origin            = out * w.r0 + Vec3 { 0, w.screenY, 0 };
 			s.edge              = lateral;
-			const Vec3 topPoint = out * 0.5 + Vec3 { 0, h, 0 };
+			const Vec3 topPoint = out * 0.5 + Vec3 { 0, h - w.screenY, 0 };
 			s.up                = rig::normalize( topPoint - s.origin );
-			s.normal            = rig::normalize( rig::cross( s.edge, s.up ) );
+			//Outward, and toward the screen: the side the coat is on.
+			s.normal = rig::normalize( rig::cross( s.edge, s.up ) );
+			if( w.above )
+				s.normal = s.normal * -1.0;
 			s.half              = w.r0 * tn;
 			s.length            = std::sqrt( rig::dot( topPoint - s.origin, topPoint - s.origin ) );
 			s.spread            = ( 0.5 * tn - s.half ) / s.length;
@@ -1121,11 +1386,20 @@ Vec3 mirror( const Sheet& s, Vec3 X )
 struct PaneHit
 {
 	bool sheet    = false;///< the ray meets the pane
-	bool onScreen = false;///< and its reflection lands on the screen
+	bool reaches  = false;///< and its reflection meets the screen's plane
+	bool onScreen = false;///< within the screen
 	double cosi   = 0.0;
 	Vec3 P, reflected, landing;
 	double u = 0.0, v = 0.0;///< the landing in the screen's picture
 };
+
+/// How far along a ray its line meets the screen's plane, or 1e30 if it
+/// heads away from it.
+double toScreen( const World& w, Vec3 o, Vec3 d )
+{
+	const double t = ( w.screenY - o.y ) / d.y;
+	return ( w.above ? d.y > 0.0 : d.y < 0.0 ) && t > 0.0 ? t : 1e30;
+}
 
 PaneHit paneRay( const World& w, Vec3 d )
 {
@@ -1133,18 +1407,21 @@ PaneHit paneRay( const World& w, Vec3 d )
 	double t = 0.0;
 	if( !hitSheet( w.sheets[ 0 ], w.eye, d, t ) )
 		return h;
-	if( d.y < 0.0 && -w.eye.y / d.y < t )
+	if( toScreen( w, w.eye, d ) < t )
 		return h;
 	h.sheet          = true;
 	const Vec3 n     = w.sheets[ 0 ].normal;
 	h.P              = w.eye + d * t;
 	h.cosi           = std::fabs( rig::dot( d, n ) );
 	h.reflected      = d - n * ( 2.0 * rig::dot( d, n ) );
-	if( h.reflected.y >= 0.0 )
+	const double tl  = toScreen( w, h.P, h.reflected );
+	if( tl >= 1e29 )
 		return h;
-	h.landing  = h.P + h.reflected * ( -h.P.y / h.reflected.y );
+	h.reaches  = true;
+	h.landing  = h.P + h.reflected * tl;
 	h.u        = ( h.landing.x - w.xMin ) / ( w.xMax - w.xMin );
-	h.v        = ( h.landing.z - w.zMin ) / ( w.zMax - w.zMin );
+	//Overhead, the picture's top is away from the audience.
+	h.v        = w.above ? ( w.zMax - h.landing.z ) / ( w.zMax - w.zMin ) : ( h.landing.z - w.zMin ) / ( w.zMax - w.zMin );
 	h.onScreen = h.u > 0.0 && h.u < 1.0 && h.v > 0.0 && h.v < 1.0;
 	return h;
 }
@@ -1162,11 +1439,169 @@ bool pixelOnScreen( const World& w, int x, int y, double margin )
 	return true;
 }
 
-/// A floor-screen picture point in the world, for a pane.
+/// The light the eye gets down one camera ray of the PYRAMID, per channel,
+/// for each of several source fields (zero: unpolarised): a white screen
+/// seen whole (Screen As Is), Dest black, no spill, films (no thickness, no
+/// ripple), the source and the screen's falloff at unity. Every ray splits
+/// at every face into the film's transmitted and reflected rays; each is
+/// followed as the renderer states it follows rays -- only while M's larger
+/// eigenvalue in its brightest channel exceeds the prune weight, at most 64
+/// rays, 16 waiting -- and false where those limits, or float roundoff at a
+/// face's or the screen's edge or at the prune line, could make the renderer
+/// differ.
+bool pyramidLight( const World& w, const Asked& a, Vec3 d0, const std::vector< Vec3 >& fields, std::vector< double >& light )
+{
+	constexpr double kEdge = 1e-4;//rig units: some 0.05 px at the default view
+	struct Ray
+	{
+		Vec3 o, d;
+		Response M[ 3 ];
+		int face = -1;
+	};
+	light.assign( fields.size() * 3, 0.0 );
+	Ray root;
+	root.o = w.eye;
+	root.d = d0;
+	for( int c = 0; c < 3; ++c )
+		for( int i = 0; i < 3; ++i )
+			for( int j = 0; j < 3; ++j )
+				root.M[ c ].m[ i ][ j ] = ( i == j ? 1.0 : 0.0 ) - comp( d0, i ) * comp( d0, j );
+	std::vector< Ray > stack { root };
+	int popped = 0;
+	while( !stack.empty() )
+	{
+		if( popped == 64 )
+			return false;
+		const Ray r = stack.back();
+		stack.pop_back();
+		++popped;
+
+		//The nearest face, any other than the one the ray left.
+		int best   = -1;
+		double tf  = 1e30;
+		for( int j = 0; j < static_cast< int >( w.sheets.size() ); ++j )
+		{
+			if( j == r.face )
+				continue;
+			const Sheet& sh = w.sheets[ j ];
+			const double dn = rig::dot( r.d, sh.normal );
+			if( std::fabs( dn ) < 1e-12 )
+				continue;
+			const double t = rig::dot( sh.origin - r.o, sh.normal ) / dn;
+			if( t <= 1e-9 )
+				continue;
+			const Vec3 q        = r.o + r.d * t - sh.origin;
+			const double e      = rig::dot( q, sh.edge );
+			const double sl     = rig::dot( q, sh.up );
+			const double margin = std::min( { sl, sh.length - sl, sh.half + sh.spread * sl - std::fabs( e ) } );
+			if( std::fabs( margin ) < kEdge )
+				return false;
+			if( margin > 0.0 && t < tf )
+			{
+				best = j;
+				tf   = t;
+			}
+		}
+		const double ts = toScreen( w, r.o, r.d );
+		if( best >= 0 && tf < ts )
+		{
+			const Vec3 P     = r.o + r.d * tf;
+			const Vec3 n     = w.sheets[ best ].normal;
+			const double ci  = -rig::dot( r.d, n );
+			const Vec3 nf    = ci < 0.0 ? n * -1.0 : n;
+			const double cosi = std::fabs( ci );
+			Vec3 sdir        = rig::cross( r.d, nf );
+			sdir             = rig::dot( sdir, sdir ) > 1e-12 ? rig::normalize( sdir ) : w.sheets[ best ].edge;
+			const Vec3 rd    = r.d - nf * ( 2.0 * rig::dot( r.d, nf ) );
+			//The light's own directions: it travels against the traced rays.
+			const Vec3 kEye = r.d * -1.0, kT = r.d * -1.0, kR = rd * -1.0;
+			Ray t, rf;
+			t.o = rf.o = P;
+			t.d        = r.d;
+			rf.d       = rd;
+			t.face = rf.face = best;
+			double reachT = 0.0, reachR = 0.0;
+			for( int c = 0; c < 3; ++c )
+			{
+				const Amp bare = bareAmp( cosi, a.eta[ c ] );
+				Amp F = bare, B = bare;
+				if( a.coating != static_cast< int >( CoatingKind::None ) )
+				{
+					double cn, ck;
+					CoatIndex( static_cast< CoatingKind >( a.coating ), c, cn, ck );
+					//The coat is on the side the declared normal points to.
+					const Amp coat = coatAmp( cosi, cn, ck, a.coatNm, a.eta[ c ], kChannelNm[ c ] );
+					( ci > 0.0 ? F : B ) = coat;
+				}
+				const double cost = std::sqrt( std::max( 0.0, 1.0 - ( 1.0 - cosi * cosi ) / ( a.eta[ c ] * a.eta[ c ] ) ) );
+				const double tau  = std::pow( a.tint[ c ], 1.0 / std::max( cost, 1e-4 ) );
+				t.M[ c ]  = through( r.M[ c ], sdir, rig::cross( sdir, kT ), rig::cross( sdir, kEye ), filmTransmission( F, B, tau ) );
+				rf.M[ c ] = through( r.M[ c ], sdir, rig::cross( sdir, kR ), rig::cross( sdir, kEye ), filmReflection( F, B, tau ) );
+				reachT    = std::max( reachT, largest( t.M[ c ], t.d ) );
+				reachR    = std::max( reachR, largest( rf.M[ c ], rf.d ) );
+			}
+			//Pushed transmitted first, then reflected: the renderer's order,
+			//which only decides when its stack would overflow.
+			for( const auto& [ child, reach ] : { std::pair< const Ray&, double >( t, reachT ), std::pair< const Ray&, double >( rf, reachR ) } )
+			{
+				if( std::fabs( reach / a.prune - 1.0 ) < 1e-4 )
+					return false;
+				if( reach > a.prune )
+				{
+					if( stack.size() == 16 )
+						return false;
+					stack.push_back( child );
+				}
+			}
+			continue;
+		}
+		if( ts >= 1e29 )
+			continue;//away from the screen: Dest is black and there is no spill
+		const Vec3 L        = r.o + r.d * ts;
+		const double margin = std::min( { L.x - w.xMin, w.xMax - L.x, L.z - w.zMin, w.zMax - L.z } );
+		if( std::fabs( margin ) < kEdge )
+			return false;
+		if( margin < 0.0 )
+			continue;//the floor beyond the screen: black
+		for( size_t f = 0; f < fields.size(); ++f )
+		{
+			const Vec3 E = fields[ f ];
+			Vec3 e       = E - r.d * rig::dot( E, r.d );
+			for( int c = 0; c < 3; ++c )
+			{
+				double I = 0.0;
+				if( rig::dot( e, e ) < 1e-12 )
+					I = 0.5 * ( r.M[ c ].m[ 0 ][ 0 ] + r.M[ c ].m[ 1 ][ 1 ] + r.M[ c ].m[ 2 ][ 2 ] ).real();
+				else
+					I = sandwich( r.M[ c ], rig::normalize( e ), rig::normalize( e ) ).real();
+				light[ f * 3 + c ] += I;
+			}
+		}
+	}
+	return true;
+}
+
+/// A pane's screen picture point in the world. The screen shows the
+/// picture mirrored, so that one reflection reads true: below, the
+/// picture's top toward the audience (+z); overhead, away from it.
 Vec3 paneScreenPoint( const World& w, double u, double v )
 {
-	return { w.xMin + u * ( w.xMax - w.xMin ), 0.0, w.zMin + v * ( w.zMax - w.zMin ) };
+	return { w.xMin + u * ( w.xMax - w.xMin ), w.screenY, w.above ? w.zMax - v * ( w.zMax - w.zMin ) : w.zMin + v * ( w.zMax - w.zMin ) };
 }
+
+/// A pyramid's screen picture point (x right, y up, units of the short
+/// side) in the world. The screen shows the picture the right way round from
+/// its front, its top along -z: below, facing up, picture x along +x;
+/// overhead, facing down, along -x.
+Vec3 pyramidScreenPoint( const World& w, double px, double py )
+{
+	return { w.above ? -px : px, w.screenY, -py };
+}
+
+/// A clip point (u, v) in arm j of the feed, laid out for the mount: the
+/// clip's top outward below, and a half turn round, top inward, above --
+/// so that looking down on the faces or up at them, the ghost stands up.
+void feedPointFor( const World& w, int j, double u, double v, double& px, double& py );
 
 /// A clip point (u, v) in arm j of the feed, in the picture's own
 /// coordinates (x right, y up, units of the short side).
@@ -1178,6 +1613,25 @@ void feedPoint( int sides, double r0, double armW, double armD, int j, double u,
 	const double r = r0 + v * armD, e = ( u - 0.5 ) * armW;
 	px = ax * r + tx * e;
 	py = ay * r + ty * e;
+}
+
+/// The feed arm that lies under face j. Below, arm j, whose picture
+/// direction is the face's; overhead, picture x runs along world -x, so the
+/// arm under face j is the one whose direction is the face's mirrored:
+/// (n - j) mod n.
+int armUnder( const World& w, int face )
+{
+	return w.above ? ( w.sides - face ) % w.sides : face;
+}
+
+void feedPointFor( const World& w, int j, double u, double v, double& px, double& py )
+{
+	if( w.above )
+	{
+		u = 1.0 - u;
+		v = 1.0 - v;
+	}
+	feedPoint( w.sides, w.r0, w.armW, w.armD, j, u, v, px, py );
 }
 
 //---------------------------------------------------------------------------
@@ -1244,6 +1698,9 @@ void physics( MixRig& rig )
 	rig.Set( "Source Black", 0.0f );
 	rig.Set( "Spill", 0.0f );
 	rig.Set( "Polarisation", 0.0f );
+	rig.Set( "Viewing Angle", ParamForViewAngle( kViewAngleMaxDeg * kDegree ) );
+	rig.Set( "Mount", 0.0f );
+	rig.Set( "Coating", 0.0f );
 	rig.Set( "Thickness", 0.0f );
 	rig.Set( "Ripple", 0.0f );
 	rig.Set( "Tint", 1.0f );

@@ -48,6 +48,14 @@ enum Fault : int
 	kFaultModesLocked  = 1 << 9, ///< every ripple mode at the fundamental (CPU) -- --ripple
 	kFaultCrossfade    = 1 << 10,///< Opacity as a crossfade to the bare stage -- --opacity
 	kFaultRotatedArms  = 1 << 11,///< the feed's arms rotated copies, not reflections -- --pyramid, --feed
+	kFaultLastOnly     = 1 << 12,///< polarisation forgotten at every interaction but the last (v0.1.0) -- --polarised
+	kFaultCoatSymmetric = 1 << 13,///< the coat reflecting the same from inside as from the air -- --coating
+	kFaultCoatIncoherent = 1 << 14,///< the coat's two faces added in intensity (CPU, the table) -- --coating
+	kFaultOneIndex     = 1 << 15,///< one index for all three channels: no dispersion (CPU) -- --fresnel
+	kFaultFalloffOff   = 1 << 16,///< the screen's falloff ignored -- --falloff
+	kFaultAboveAsBelow = 1 << 17,///< Mount Above with Below's picture maps and feed (CPU) -- --geometry, --pyramid, --feed
+	kFaultClockwise    = 1 << 18,///< the polarisation angle taken clockwise: 45 and 135 swapped (CPU, the rig) -- --fresnel
+	kFaultLeaveBound   = 1 << 19,///< the coat's table left bound on unit 2, unit 2 left active (CPU) -- --mixer
 };
 
 } // namespace pepper

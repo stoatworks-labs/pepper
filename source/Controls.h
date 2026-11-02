@@ -56,13 +56,42 @@ inline constexpr double kSourceBlackMax = 0.05;
 /// fraction of white, 0 to 0.5, linear.
 inline constexpr double kSpillMax = 0.5;
 
+/// The smallest contribution a ray is followed for, in linear light: under
+/// half an 8-bit code even at black, where sRGB is steepest (1/8192 x 12.92
+/// x 255 = 0.40 codes). A ray is followed only while the most it could
+/// still deliver -- its weight, Q's larger eigenvalue, in its brightest
+/// channel -- exceeds this over the brightest light in the scene: Source
+/// Level's gain (NOT x Opacity), Spill or Stage Level's gain.
+inline constexpr double kPruneLight = 1.0 / 8192.0;
+
 enum class Polarisation : int
 {
 	None,      ///< an LED wall, a projector: unpolarised
 	Horizontal,///< E along the screen picture's x (an LCD turned on its side)
 	Vertical,  ///< E along the screen picture's y (most LCD TVs, upright)
+	Deg45,     ///< E at 45 degrees anticlockwise from the picture's x (many monitors and phones)
+	Deg135,    ///< E at 135 degrees: the other diagonal
 	Count
 };
+
+/// The angle of a polarised source's E field from the screen picture's x
+/// axis, anticlockwise as the picture is seen from in front; meaningless for
+/// None.
+double PolarisationAngle( Polarisation kind );
+
+/// Viewing Angle: the full angle, either side of the screen's normal, at
+/// which its luminance has fallen to half, 40 to 180 degrees, linear. 180 is
+/// a Lambertian emitter (no falloff); an LED tile is typically 120 to 160.
+/// The model is the generalised Lambertian, L proportional to cos^p of the
+/// angle off the normal, with p chosen to halve L at half this angle.
+inline constexpr double kViewAngleMinDeg     = 40.0;
+inline constexpr double kViewAngleMaxDeg     = 180.0;
+inline constexpr double kViewAngleDefaultDeg = 180.0;
+
+double ViewAngleFromParam( float value );///< radians, the full angle
+float ParamForViewAngle( double radians );
+/// p in L proportional to cos^p, for a full half-luminance angle; 0 at 180 degrees.
+double FalloffPower( double fullAngle );
 
 double SourceGainFromParam( float value );///< linear multiplier, 2^stops
 double StageGainFromParam( float value ); ///< linear multiplier, 2^stops
@@ -81,6 +110,16 @@ enum class RigKind : int
 {
 	Pane,   ///< one sheet over a floor screen: the theatre, Musion
 	Pyramid,///< three or four sheets standing on a screen: the phone toy
+	Count
+};
+
+/// Where the hidden screen is. Above is the whole rig turned upside down: a
+/// display case with its monitor in the lid, a pyramid standing apex up
+/// under a monitor that faces down. Rig.h says which way up each picture is.
+enum class MountKind : int
+{
+	Below,///< the screen on the floor or the table, facing up
+	Above,///< the screen overhead, facing down
 	Count
 };
 
@@ -124,10 +163,48 @@ enum class SheetKind : int
 	Count
 };
 
-/// The refractive index of each sheet at the d line (587.6 nm). One number
-/// for all three channels: dispersion is not modelled (AGENTS.md).
+/// Each channel stands for one wavelength: the dominant wavelength of its
+/// BT.709 primary against D65, from the CIE 1931 observer. Red, green, blue.
+inline constexpr double kChannelNm[ 3 ] = { 611.3, 549.1, 464.3 };
+/// The channel whose index bends the rays: green. Rays are not traced per
+/// channel, which would triple a thick sheet's back images. The colour fringe
+/// this leaves out is 0.7 % (glass) to 1.7 % (polycarbonate, PET) of a back
+/// image's offset, and nothing for a film (AGENTS.md, "Dispersion").
+inline constexpr int kRayChannel = 1;
+
+/// A sheet's refractive index at a wavelength, from its published
+/// dispersion (Controls.cpp cites each).
+double IndexAt( SheetKind kind, double nanometres );
+/// At the d line, 587.6 nm: the number a datasheet quotes.
 double IndexOf( SheetKind kind );
+/// At channel c's wavelength.
+double ChannelIndex( SheetKind kind, int channel );
 const char* NameOf( SheetKind kind );
+
+/// A thin coat on the sheet's screen side -- the side the hidden screen and
+/// the audience are on.
+enum class CoatingKind : int
+{
+	None,
+	Aluminium,      ///< a metal partial mirror: a beam splitter, a metallised foil
+	TitaniumDioxide,///< a high-index dielectric layer: reflects more, absorbs nothing
+	Count
+};
+const char* NameOf( CoatingKind kind );
+
+/// Coat Thickness: for aluminium 0 to 10 nm, linear (at 5 nm a film reflects
+/// and transmits about 40 % each and absorbs the rest); for titanium dioxide
+/// 0 to 2 quarter waves at the green channel's wavelength, linear (one
+/// quarter wave, 56 nm, is the textbook high reflector; two is a half wave,
+/// which green does not see at all face on).
+inline constexpr double kAluminiumMaxNm      = 10.0;
+inline constexpr double kTitaniaMaxQuarters  = 2.0;
+inline constexpr double kCoatThicknessDefault = 0.5;
+
+double CoatThicknessNm( CoatingKind kind, float value );
+float ParamForCoatThickness( CoatingKind kind, double nanometres );
+/// The coat's complex index n + i k at channel c's wavelength.
+void CoatIndex( CoatingKind kind, int channel, double& n, double& k );
 
 /// Thickness: 0 to 4 % of the rig size, linear. 0 is a film: every image of
 /// the sheet's two surfaces lands in the same place. 12 mm plate under a

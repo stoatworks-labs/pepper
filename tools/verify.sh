@@ -13,9 +13,13 @@
 #   suites        the plugins' claims, measured at TWO rasters, each with its
 #                 own negative control: two inputs at two sizes with two
 #                 MaxUVs; the ghost only adds light; R + T = 1; Brewster's
-#                 null and Abeles's R_p = R_s^2; a thick pane's images where
-#                 Snell puts them, with the series' weights; the ghost where
-#                 the mirror puts it at every angle; the foil's spectrum at
+#                 null and Abeles's R_p = R_s^2, each channel at its own
+#                 index; a thick pane's images where Snell puts them, with
+#                 the series' weights; a coat's interference against an
+#                 independent thin-film model; the screen's falloff; a
+#                 polarised source through every face of the pyramid; the
+#                 ghost where the mirror puts it at every angle, screen
+#                 below or above; the foil's spectrum at
 #                 the membrane's modes; Opacity is the source's light; the
 #                 pyramid's faces and the feed's arms; and one character of
 #                 the shipped GLSL mutated
@@ -100,7 +104,7 @@ else
 fi
 
 PGTEST="$BUILD/pgtest"
-SUITES="names mixer additive energy fresnel double geometry ripple opacity pyramid feed mutation"
+SUITES="names mixer additive energy fresnel double coating falloff polarised geometry ripple opacity pyramid feed mutation"
 
 step "suites"
 for t in $SUITES; do
@@ -307,7 +311,7 @@ words = ( "patch sample input output filter common active half layout flat packe
           "noise1 noise2 noise3 noise4 superp partition resource namespace using cast external "
           "interface long short fixed unsigned inline goto asm class union enum typedef template "
           "this volatile public static extern sizeof near far" ).split()
-types = r"(?:float|int|uint|bool|[iuhdf]?vec[234]|mat[234]|sampler2D|Ray|void|const)"
+types = r"(?:float|int|uint|bool|[iuhdf]?vec[234]|mat[234]|sampler2D|Ray|Coef|void|const)"
 pattern = re.compile( r"\b" + types + r"\s+(" + "|".join( words ) + r")\b" )
 text = pathlib.Path( "source/Shaders.cpp" ).read_text()
 glsl = "".join( re.findall( r'R"\((.*?)\)"', text, re.S ) )

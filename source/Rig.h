@@ -43,6 +43,32 @@
     **Camera.** A pinhole, 30 degrees vertical, orbiting the rig's centre at
     Distance rig sizes, Elevation and Azimuth. `right x up` points at the
     viewer.
+
+    **Mount = Above.** The rig turned upside down: the screen overhead
+    facing down, the pane hanging from its top edge, the pyramid standing on
+    its wide end with its small end at the screen. It is built as the mirror
+    image, in the horizontal plane through the rig's centre, of the Below
+    rig above -- the same world, so the same shader -- and the CAMERA is
+    reflected into it instead: its eye, forward, right and up each have y
+    negated about the centre. Mirror symmetry is exact for these optics
+    (nothing here is chiral), so the picture is the Above rig's own.
+    Which way up the screen's picture is, as the audience would rig it:
+      - Pane: the picture's top AWAY from the audience (map AsIs on the
+        pane's rectangle), which is what stands the ghost upright when the
+        screen is overhead.
+      - Pyramid: the screen turned face down about the viewer's line of
+        sight, so arm 0 still points at the viewer and the picture is
+        mirrored left to right in world x (maps AsIsMirrored and
+        FeedMirrored). The feed for an apex-up pyramid has each arm's clip
+        turned through 180 degrees in place, top INWARD (FeedFlip); with
+        the apex-down layout every face shows the clip upside down.
+
+    **Polarisation** is the screen's own: an E field along the picture's x,
+    its y or a diagonal, mapped into the world through the screen's map.
+
+    **Dispersion.** The sheet's index is per channel (eta[ 3 ], Controls.h's
+    wavelengths): it sets each channel's Fresnel weights and the coat's
+    table. Rays are bent with the green channel's index alone (etaRay).
 */
 namespace pepper::rig
 {
@@ -92,10 +118,16 @@ struct Face
 
 enum class ScreenMap : int
 {
-	PaneFloor = 0,///< u along x, v along z (top toward the audience)
-	AsIs      = 1,///< the picture as it is: u along x, v along -z
-	Feed      = 2,///< SW Pepper Feed's layout of the picture
+	PaneFloor    = 0,///< u along x, v along z (top toward the audience)
+	AsIs         = 1,///< the picture as it is: u along x, v along -z
+	Feed         = 2,///< SW Pepper Feed's layout, picture (x, y) at world (x, -z)
+	AsIsMirrored = 3,///< u along -x, v along -z (a pyramid's screen overhead)
+	FeedMirrored = 4,///< the feed, picture (x, y) at world (-x, -z)
 };
+
+/// The screen picture's own x and y axes, as world directions in the
+/// screen's plane, for a map.
+void PictureAxes( ScreenMap map, Vec3& px, Vec3& py );
 
 struct Setup
 {
@@ -109,15 +141,23 @@ struct Setup
 	//The sheets.
 	int faces = 0;
 	Face face[ kMaxFaces ];
-	double eta       = 1.5;
+	double eta[ 3 ]  = { 1.5, 1.5, 1.5 };///< per channel
+	double etaRay    = 1.5;              ///< the index rays are bent with
 	double thickness = 0.0;///< world units
 	double tint[ 3 ] = { 1.0, 1.0, 1.0 };
+	int coating      = 0;  ///< CoatingKind
+	double coatNm    = 0.0;
+	int mount        = 0;  ///< MountKind
 
 	//The screen: a rectangle in y = 0, `xMin..xMax` by `zMin..zMax`.
 	ScreenMap map = ScreenMap::PaneFloor;
 	double xMin = 0.0, xMax = 0.0, zMin = 0.0, zMax = 0.0;
 	/// The source's E field, in world space, or zero for unpolarised.
 	Vec3 polarisation;
+	/// The screen's luminance off its normal: proportional to cos^falloff.
+	double falloff = 0.0;
+	/// The feed's arms turned 180 degrees in place: an apex-up pyramid's.
+	bool feedFlip = false;
 
 	//The feed: n arms of w by d, starting at apothem r0 = c/2, in units of
 	//the picture's short side.
@@ -163,6 +203,10 @@ struct Inputs
 	double azimuth   = 0.0;
 	double sourceGain = 1.0, sourceBlack = 0.0, spill = 0.0, stageGain = 1.0;
 	int polarisation  = 0;
+	double viewAngle  = 3.14159265358979323846;///< the full half-luminance angle
+	int mount         = 0;
+	int coating       = 0;
+	double coatNm     = 0.0;
 	bool linearLight  = true;
 
 	double srcAspect = 16.0 / 9.0;///< Src's width / height
@@ -171,6 +215,10 @@ struct Inputs
 
 	/// The negative control: every mode at the fundamental's frequency.
 	bool modesLocked = false;
+	/// The negative control: Above with the Below picture maps and feed.
+	bool aboveAsBelow = false;
+	/// The negative control: the polarisation angle taken clockwise.
+	bool clockwise = false;
 };
 
 Setup Build( const Inputs& in );

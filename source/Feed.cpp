@@ -20,6 +20,7 @@ Feed::Feed()
 
 	params[ PT_SIDES ]  = 0.0f;
 	params[ PT_CENTRE ] = ParamForCentre( kCentreDefault );
+	params[ PT_MOUNT ]  = 0.0f;
 
 	//The same two controls, the same names and the same conversions as SW
 	//Pepper's Rig group, so equal slider positions are the same layout bit
@@ -28,8 +29,12 @@ Feed::Feed()
 	SetParamElementInfo( PT_SIDES, 0, "Four", 0.0f );
 	SetParamElementInfo( PT_SIDES, 1, "Three", 1.0f );
 	SetParamInfof( PT_CENTRE, "Centre", FF_TYPE_STANDARD );
+	SetOptionParamInfo( PT_MOUNT, "Mount", static_cast< unsigned >( MountKind::Count ), 0.0f );
+	SetParamElementInfo( PT_MOUNT, 0, "Screen Below", 0.0f );
+	SetParamElementInfo( PT_MOUNT, 1, "Screen Above", 1.0f );
 	SetParamGroup( PT_SIDES, "Feed" );
 	SetParamGroup( PT_CENTRE, "Feed" );
+	SetParamGroup( PT_MOUNT, "Feed" );
 
 	SetParamInfo( PT_ABOUT_FIRST, "About", FF_TYPE_TEXT, stoatworks::about::defaultText() );
 	{
@@ -122,6 +127,10 @@ FFResult Feed::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 	shader.Set( "ShortSide", static_cast< float >( std::min( outW, outH ) ) );
 
 	shader.Set( "FeedSides", sides );
+	//An apex-up pyramid's feed: each arm turned 180 degrees in place. The
+	//--feed negative control lays it out for apex down regardless.
+	const bool above = OptionIndex( params[ PT_MOUNT ], static_cast< int >( MountKind::Count ) ) == static_cast< int >( MountKind::Above );
+	shader.Set( "FeedFlip", above && ( fault & kFaultAboveAsBelow ) == 0 ? 1 : 0 );
 	shader.Set( "FeedR0", static_cast< float >( 0.5 * centre ) );
 	shader.Set( "FeedArm", static_cast< float >( w ), static_cast< float >( d ) );
 	glUniform4fv( shader.FindUniform( "FeedAxis" ), 4, axes );

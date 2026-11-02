@@ -24,6 +24,9 @@ screen -- and the defaults are the stage card and the figure card.
 pane, which has no sides, no centre and a screen it shows as it is; they are
 swept with Rig = Pyramid.
 
+**Coat Thickness belongs to a coat.** With Coating = None there is no layer
+to be thick, so it is swept with Coating = Aluminium.
+
 **Ripple Speed needs time to pass.** At t = 0 every mode is at its phase
 offset whatever its speed, so it is swept at 1.25 s. (The harness primes the
 clock at 0 and then renders at --time; see MixRig::Render.)
@@ -63,6 +66,7 @@ CONTEXT = {
     ("pepper", "Sides"): PYRAMID,
     ("pepper", "Centre"): PYRAMID,
     ("pepper", "Screen"): PYRAMID,
+    ("pepper", "Coat Thickness"): {"Coating": "Aluminium"},
 }
 
 # (plugin, name) -> the two positions swept, where the range's ends will not do.

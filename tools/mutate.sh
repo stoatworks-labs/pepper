@@ -13,6 +13,11 @@
 # named check is run once against the unmutated copy first, so a check that
 # fails anyway cannot pass for one that caught something.
 #
+# The rotation's own cross terms, 2 c sn qr in Q's new diagonal, have no
+# mutant: qr is zero until a ray has turned between two planes of incidence,
+# so they reach the picture only at a third face, and flipping one moves no
+# measured pixel by 3e-7 (AGENTS.md, "The mutation").
+#
 # Controls.cpp has no mutant here, on purpose: the harness reads what it asked
 # for back through Controls.h (asked()), so a wrong mapping moves the plugin
 # and the prediction together. The mappings' ends are pinned by --names.
@@ -30,9 +35,12 @@ export PEPPER_LOG_DIR="$WORK/logs"
 
 # file | the exact text | its one-character mutant | the check that must fail | what it is
 MUTANTS=(
-	"source/Shaders.cpp|float rp    = ( Eta * cosi - cost )|float rp    = ( Eta * cosi + cost )|--fresnel|GLSL: p reflection's numerator signed wrong, so no Brewster null, - -> +"
-	"source/Shaders.cpp|return fs * r.ps + ( 1.0 - fs ) * r.pp;|return fs * r.ps + ( 1.0 + fs ) * r.pp;|--fresnel|GLSL: a polarised source's p share added to its s, - -> +"
-	"source/Shaders.cpp|vec3 Ts = ( 1.0 - Rs ) * ( 1.0 - Rs ) * tau / ( 1.0 - Rs * Rs * tau2 );|vec3 Ts = ( 1.0 - Rs ) * ( 1.0 - Rs ) * tau / ( 1.0 + Rs * Rs * tau2 );|--energy|GLSL: the transmitted echoes summed as an alternating series, - -> +"
+	"source/Shaders.cpp|vec3 rp    = ( Eta * cosi - cost )|vec3 rp    = ( Eta * cosi + cost )|--fresnel|GLSL: p reflection's numerator signed wrong, so no Brewster null, - -> +"
+	"source/Shaders.cpp|b * b * r.qp + 2.0 * a * b * r.qr ) / n2;|b * b * r.qp - 2.0 * a * b * r.qr ) / n2;|--polarised|GLSL: a polarised source seen with the s-p cross term negated, which only a ray turned between two planes of incidence carries, + -> -"
+	"source/Shaders.cpp|return Coef( a.s / ( 1.0 - b.s ),|return Coef( a.s / ( 1.0 + b.s ),|--energy|GLSL: a sheet's internal echoes summed as an alternating series, - -> +"
+	"source/Shaders.cpp|vec3 spr = c * sn * ( qp - qs )|vec3 spr = c * sn * ( qp + qs )|--polarised|GLSL: Q turned into the next face's s and p with its new cross term signed wrong, - -> +"
+	"source/Shaders.cpp|fall = pow( max( -r.d.y, 0.0 ), Falloff );|fall = pow( max( +r.d.y, 0.0 ), Falloff );|--falloff|GLSL: the screen's falloff measured off its back, - -> +"
+	"source/Shaders.cpp|texelFetch( CoatTable, ivec2( i + 1, row ), 0 )|texelFetch( CoatTable, ivec2( i - 1, row ), 0 )|--coating|GLSL: the coat's table interpolated toward the wrong neighbour, + -> -"
 	"source/Shaders.cpp|Pk      = Pb + dr * ( depth / dot( dr, nf ) );|Pk      = Pb - dr * ( depth / dot( dr, nf ) );|--double|GLSL: the back surface's image walked the wrong way along the pane, + -> -"
 	"source/Shaders.cpp|( P.x - r.x ) / ( r.y - r.x ), ( P.z - r.z )|( P.x + r.x ) / ( r.y - r.x ), ( P.z - r.z )|--geometry|GLSL: the pane's screen picture shifted across by its own width, - -> +"
 	"source/Shaders.cpp|cuv = vec2( e / FeedArm.x + 0.5, r / FeedArm.y );|cuv = vec2( e / FeedArm.x - 0.5, r / FeedArm.y );|--feed|GLSL: every feed arm sampled half a clip to one side, + -> -"
@@ -41,7 +49,13 @@ MUTANTS=(
 	"source/Rig.cpp|in.rippleHz * slope[ k ] / slope[ 0 ];|in.rippleHz * slope[ k ] / slope[ 1 ];|--ripple|C++: every mode's frequency scaled by the wrong fundamental, 0 -> 1"
 	"source/Rig.cpp|d               = w / aspect;|d               = w * aspect;|--feed|C++: a feed arm's depth stretched by the aspect, not squeezed, / -> *"
 	"source/Rig.cpp|ay = -std::cos( theta );|ay = +std::cos( theta );|--feed|C++: arm 0 pointing up the picture, away from the viewer, - -> +"
+	"source/Rig.cpp|s.eye.y     = 2.0 * s.target.y - s.eye.y;|s.eye.y     = 2.0 * s.target.y + s.eye.y;|--geometry|C++: the Above rig's camera not reflected about the rig's centre, - -> +"
+	"source/Rig.cpp|ChannelIndex( static_cast< SheetKind >( in.sheet ), c );|ChannelIndex( static_cast< SheetKind >( in.sheet ), 1 );|--fresnel|C++: every channel given green's index, so no dispersion, c -> 1"
+	"source/Rig.cpp|px * std::cos( chi ) + py * std::sin( chi );|px * std::cos( chi ) - py * std::sin( chi );|--fresnel|C++: the polarisation angle taken clockwise, + -> -"
+	"source/Coating.cpp|const Complex ds = 1.0 + a.rs * b.rs * E|const Complex ds = 1.0 - a.rs * b.rs * E|--coating|C++: Airy's denominator for s with the echo signed wrong, + -> -"
+	"source/Coating.cpp|const Complex ris = ( -b.rs - a.rs * E ) / ds|const Complex ris = ( +b.rs - a.rs * E ) / ds|--coating|C++: the coat seen from inside the sheet without r' = -r, - -> +"
 	"source/Pepper.cpp|shader.Set( \"MaxUVSrc\", maxSrc.s, maxSrc.t );|shader.Set( \"MaxUVSrc\", maxSrc.s, maxSrc.s );|--mixer|C++: Src's MaxUV square, t -> s"
+	"source/Pepper.cpp|glActiveTexture( GL_TEXTURE0 + 1 );|glActiveTexture( GL_TEXTURE0 + 2 );|--mixer|C++: unit 2 left active after the coat's table is unbound, so Src's binding is never released, 1 -> 2"
 	"source/Pepper.cpp|SourceGainFromParam( params[ PT_SOURCE_LEVEL ] ) * opacity;|SourceGainFromParam( params[ PT_SOURCE_LEVEL ] ) / opacity;|--opacity|C++: Opacity divides the source's light, * -> /"
 )
 

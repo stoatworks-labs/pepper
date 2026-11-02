@@ -10,6 +10,7 @@
 #include "Timing.h"
 
 #include <string>
+#include <vector>
 
 namespace pepper
 {
@@ -33,7 +34,8 @@ namespace pepper
     changing ProcessOpenGL.
 
     Its only state across frames is the clock, which drives the foil's
-    ripple; there are no buffers, so a resize clears nothing.
+    ripple, and the coat's table, a cache of numbers that depend only on
+    the controls; there are no picture buffers, so a resize clears nothing.
 */
 class Pepper : public CFFGLPlugin
 {
@@ -111,11 +113,13 @@ public:
 		PT_SOURCE_LEVEL,
 		PT_SOURCE_BLACK,
 		PT_POLARISATION,
+		PT_VIEW_ANGLE,
 		PT_STAGE_LEVEL,
 		PT_SPILL,
 
 		//Rig
 		PT_RIG,
+		PT_MOUNT,
 		PT_SHEET_ANGLE,
 		PT_SIDES,
 		PT_CENTRE,
@@ -123,6 +127,8 @@ public:
 
 		//Sheet
 		PT_SHEET,
+		PT_COATING,
+		PT_COAT_THICKNESS,
 		PT_THICKNESS,
 		PT_TINT_R,
 		PT_TINT_G,
@@ -143,6 +149,14 @@ public:
 private:
 	ffglex::FFGLShader shader;
 	ffglex::FFGLScreenQuad quad;
+
+	/// The coat's table (Coating.h), rebuilt only when what it depends on
+	/// changes: the coat, its thickness and the sheet.
+	GLuint coatTexture = 0;
+	int coatKey[ 3 ]   = { -1, -1, -1 };
+	float coatKeyNm    = -1.0f;
+	std::vector< float > coatData;
+	void UpdateCoatTable( const rig::Setup& s );
 
 	timing::Clock clock;
 	rig::Setup lastSetup;

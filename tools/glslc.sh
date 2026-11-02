@@ -49,7 +49,7 @@ FILES = [
 # InitGL do: a fragment shader is kVersion + kCommon + its piece
 # (Shaders.cpp's AssembleFragment()), the vertex shader kVersion + kVertex
 # (AssembleVertex()). Every pass is listed; a name that has moved is a
-# KeyError. kPepperFragment is two adjacent raw strings, joined below.
+# KeyError. kPepperFragment is three adjacent raw strings, joined below.
 ASSEMBLED = {
 	"vertex": [ "kVersion", "kVertex" ],
 	"pepper": [ "kVersion", "kCommon", "kPepperFragment" ],

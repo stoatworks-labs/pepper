@@ -13,7 +13,9 @@ namespace pepper
 /**
     SW Pepper Feed -- the layout a pyramid hologram is fed, as an FFGL
     **effect**: the clip below, three or four times round a centre square,
-    each arm's top outward and each arm a mirror image, over black.
+    each arm a mirror image, over black; each arm's top outward for a
+    pyramid standing apex down on its screen (Mount = Screen Below), inward
+    for one standing apex up under a screen facing down (Screen Above).
 
     An effect and not a mixer because it is a picture made from one picture:
     it belongs on a clip, a layer or the composition, wherever the feed for a
@@ -57,6 +59,7 @@ public:
 	{
 		PT_SIDES,
 		PT_CENTRE,
+		PT_MOUNT,
 
 		PT_ABOUT_FIRST,
 		PT_COUNT = PT_ABOUT_FIRST + stoatworks::about::kParamCount

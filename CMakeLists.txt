@@ -72,6 +72,8 @@ add_library(pepper_core OBJECT
     source/Names.h
     source/Controls.h
     source/Controls.cpp
+    source/Coating.h
+    source/Coating.cpp
     source/Rig.h
     source/Rig.cpp
     source/Shaders.h

@@ -59,24 +59,33 @@ lenticular's before touching `ProcessOpenGL`. The spec is
     source, into a scratch dir.
 - Names, ids, index 0 is Linear Light, the source's light is Opacity:
   `./build/pgtest --names`
-- Two inputs, two sizes, two MaxUVs, the guards: `--mixer`
+- Two inputs, two sizes, two MaxUVs, the guards, no texture unit left bound:
+  `--mixer`
 - The ghost only adds light; the stage alone is T × Stage Level × its decoded
   light: `--additive`
 - R + T = 1 per pixel, every sheet; a tint loses exactly its absorption:
   `--energy`
-- Brewster's null where atan n puts it; R_p = R_s² at 45°: `--fresnel`
-- A thick pane's images, weights and positions (Snell): `--double`
-- Dots where the mirror puts them, and the keystone: `--geometry`
+- Brewster's null where atan n puts it, each channel at its own index;
+  R_p = R_s² at 45°; a source polarised at 45° and 135°: `--fresnel`
+- A thick pane's images, weights and positions (Snell), and the colour fringe
+  dispersion would add: `--double`
+- A coat's interference against an independent thin-film model, from either
+  side: `--coating`
+- The screen's angular falloff: `--falloff`
+- A polarised source through every face of the pyramid, against a 3D trace:
+  `--polarised`
+- Dots where the mirror puts them, and the keystone, screen below and above:
+  `--geometry`
 - The foil rings at its frame's mode frequencies, and the stage does not move:
   `--ripple`
 - Opacity 0 is the black-Src picture to the bit; the ghost is linear in it:
   `--opacity`
-- Each pyramid face shows the clip the right way round; from above, the feed:
-  `--pyramid`
-- The feed's arms are mirror images, where stated; the mixer agrees:
-  `--feed`
+- Each pyramid face shows the clip the right way round, apex down and apex
+  up; from above, the feed: `--pyramid`
+- The feed's arms are mirror images, where stated; the mixer agrees, below and
+  above: `--feed`
 - One character of the shipped GLSL fails `--double`: `--mutation`
-- 13 one-character mutants of the GLSL and the C++, each caught:
+- 22 one-character mutants of the GLSL and the C++, each caught:
   `tools/mutate.sh`
 - No dead control in either plugin: `python3 tools/sweep.py`
 - The shaders through glslc: `tools/glslc.sh`
@@ -117,6 +126,15 @@ control (`SetFaultForTest`).
 - **No time reaches the GPU.** Ripple phases are reduced in double on the CPU
   (`rig::Build`). The clock is relay's `Timing.h`: Arena's `SetTime` is in ms,
   and the unit is settled by voting.
+- **A coat is a table on texture unit 2**, built in double by `Coating.cpp`.
+  It is bound by hand around the draw and unbound after, because the scoped
+  bindings only clear units 0 and 1. `--mixer` asserts every unit is clean.
+- **Screen above is the Below rig seen in a mirror** (`rig::Build` reflects the
+  camera). The harness predicts it in real space instead, never through the
+  reflection.
+- **Prune is `kPruneLight` (`Controls.h`) over the brightest light**, and the
+  harness prunes each image the same way. A pixel within 1e-4 of the prune is
+  not predicted.
 - **Predictions are made from what the harness ASKED** (`asked()`, through
   `Controls.h`), never from `SetupForTest()`. The harness's optical model in
   `Harness.h` is its own, written from the spec, not from `Rig.cpp`.
@@ -126,7 +144,7 @@ control (`SetFaultForTest`).
 - Override `SetTextParameter` to return `FF_SUCCESS` for the About block, or no
   host can instantiate the plugin.
 - macOS build must be universal. Verify with `lipo`, never the build log.
-- `kPepperFragment` is two adjacent raw strings, because MSVC caps one literal
+- `kPepperFragment` is three adjacent raw strings, because MSVC caps one literal
   near 16 KB. `tools/glslc.sh` joins them as the compiler does.
 - GLSL reserved words to avoid: `patch sample input output filter common active
   half layout flat packed smooth round`, `noise1`–`noise4`, and the rest of GLSL
@@ -141,15 +159,12 @@ control (`SetFaultForTest`).
   repository, release, website page, demo or video. **Releasing needs Allan's
   go-ahead.**
 - No CI, on purpose: a new repo is private, and private repos get no workflows.
-- Not modelled:
-  - dispersion;
+- Not modelled (AGENTS.md says why):
+  - haze, scattering and dust: it needs a blurred copy of each input, a pass
+    the plugin does not have;
   - birefringent PET;
-  - foil coatings;
-  - haze;
-  - the screen's angular falloff;
-  - screen-above display cases;
-  - apex-up pyramids;
-  - LCDs polarised at 45°.
+  - per-channel ray bending: a thick sheet's red and blue back images land
+    together. The fringe this leaves out is printed by `--double`.
 
 ## Diagnostics
 

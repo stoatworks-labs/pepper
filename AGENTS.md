@@ -49,8 +49,9 @@ per pixel, in linear light:
 3. Its reflected part goes to the hidden screen (Src), or to the dark around it.
 
 Everything the README lists — the ghost is additive, the stage is dimmed,
-Brewster's null, the double image of a thick pane, the tint applied twice, the
-foil's swim, the keystone, the pyramid's faces — falls out of that one model.
+Brewster's null, the double image of a thick pane, the tint applied twice, a
+coat's interference, the foil's swim, the keystone, the pyramid's faces, the
+screen above or below — falls out of that one model.
 None of it is a separate effect. The spec has the geometry in full, and
 `source/Rig.h` has it as code.
 
@@ -122,15 +123,41 @@ None of it is a separate effect. The spec has the geometry in full, and
   - the epoch is the first reading;
   - a host that never calls `SetTime` gets a steady clock.
 - **The shader is a small ray tree.** Per pixel, four rotated-grid subsamples
-  each trace a camera ray through an explicit stack: 16 deep, at most 64 rays.
+  each trace a camera ray **backwards from the eye** through an explicit stack:
+  16 deep, at most 64 rays.
   - At each sheet the ray splits into one transmitted ray and the reflected
     images. A film has one; a thick pane has three plus the lumped rest of the
     series.
-  - A ray is pushed only if its weight exceeds `Prune` = 1/8192 of the
-    brightest light in the scene. That brightest light is computed from Source
-    Level, **not** Source Level × Opacity: otherwise the set of rays followed
-    would change with the fader, and Opacity 0 would not be the black-Src
-    picture bit for bit.
+  - Each ray carries **Q**, per channel a 2×2 Hermitian matrix: how the eye
+    sees a field arriving down it, E^H Q E. It starts as the identity. Each
+    interaction turns Q into its own s and p (p = s × k, Born & Wolf, both
+    sides) and applies Q' = J^H Q J, J = diag(x_s, x_p), where x is a summed
+    Coef: |x_s|², |x_p|² and conj(x_s) x_p, which carries the phase. At the
+    screen a polarised source's field E is seen as E^H Q E, an unpolarised one
+    as tr Q / 2. So a polarisation is carried through every face, not just the
+    last (v0.1.0's approximation, now `kFaultLastOnly`).
+  - A ray is pushed only if Q's larger eigenvalue — the most it could still
+    contribute, whatever the light it meets — exceeds `Prune` =
+    `kPruneLight` (1/8192, `Controls.h`) divided by the brightest light in the
+    scene: max(Source Level's gain, Spill, Stage Level). That is computed from
+    Source Level, **not** Source Level × Opacity: otherwise the set of rays
+    followed would change with the fader, and Opacity 0 would not be the
+    black-Src picture bit for bit.
+- **A coat is a table.** `Coating.cpp` sums the layer's Airy series in double,
+  per channel, over 1024 values of cos(incidence): R and the s-p product from
+  the air, the same from inside the sheet, and T, 12 rows in all. It is
+  uploaded as RGBA32F when Sheet, Coating or Coat Thickness changes, bound by
+  hand on texture unit 2 around the draw, and unbound after: the scoped
+  bindings clear units 0 and 1 only. `--mixer` asserts all three units are
+  empty, and unit 0 active, after a coated frame.
+- **Screen above is the Below rig seen in a mirror.** `rig::Build` reflects the
+  camera about the rig's centre height and flips the screen picture's mapping,
+  so the shader has one geometry. The harness does not: it predicts Above in
+  real space, the screen overhead facing down (`worldFor`).
+- **Each channel has its own index** (`kChannelNm`: 611.3, 549.1, 464.3 nm,
+  the BT.709 primaries' dominant wavelengths) for Fresnel, the coat and the
+  tint's path. The rays themselves bend by green's (`kRayChannel`); see
+  "Dispersion" below.
 - **Dest is sampled once, at the pixel's own centre**, and multiplied by the
   summed weight of the rays that reached the stage. A thin sheet does not
   deviate what is seen through it, and that is what makes the stage stand
@@ -151,6 +178,14 @@ double-precision model in `tools/pgtest/Harness.h`:
 
 - `worldFor`, `paneRay`, `mirror`, `project`, `fresnelAt`, `filmR`/`filmT` and
   `feedPoint`;
+- for a coat, a Macleod characteristic matrix (`macleodAt`), in Macleod's own
+  sign convention (N = n − ik), carried into Born & Wolf's for comparison:
+  conjugated, r_p → −conj(r_p), t_p from tangential to full fields, and t
+  normalised by the power each side carries;
+- the slab's incoherent series (`slabR`, `slabT`) in Coefs of their own;
+- a 3D coherency tracer through the pyramid (`pyramidLight`): world-space 3×3
+  matrices, M' = J^H M J with J = x_s s sᵀ + x_p p_out p_inᵀ, pruned as the
+  plugin prunes, so it shares no basis and no code with the shader's 2×2 Q;
 - written from the spec's geometry, not from `rig::Build` or the shader;
 - fed what the harness **asked for**, through `asked()`, which reads the
   parameters back through `Controls.h`. They are never fed `SetupForTest()`,
@@ -178,6 +213,14 @@ double-precision model in `tools/pgtest/Harness.h`:
 | `--opacity` | **0 bytes, 0 floats** at Opacity 0; `kLightTol` for linearity | Opacity multiplies the source's gain and nothing else, Prune included (above). |
 | `--feed` dots | **0.375 px** | As for the dots above, in the feed's own pixels. The arms are axis-aligned at four sides, so there is no projective shift. |
 | `--feed` mixer agreement | the feed's 0.375 px, seen through the mixer's camera | The mixer's pyramid screen from 60° up, against the feed's **measured** points, not its predicted ones. |
+| `--fresnel` per channel | as above, for each of red, green and blue at its own index | Each channel's null sits where atan n for that channel puts it: 4 px apart, red to blue, for PET at 640×360. |
+| `--fresnel` 45° and 135° | `kLightTol` per pixel; the mirror pair to `kLightTol` | R for the field at that angle, projected onto each pixel's own s and p. |
+| `--coating` model | **1e-12** for identities; **1e-4** for titanium dioxide's R + T | A zero-thickness layer is the bare surface; reciprocity; quarter and half waves; bulk aluminium; the plugin's Airy sum against the harness's matrix and its cross terms. All exact in double, 1e-15 measured. Titanium dioxide is not lossless: Siefke's k is 5.4e-6 in blue, which makes R + T short by 5e-5. |
+| `--coating` picture | `kLightTol`; the absorption **2 × `kLightTol`** | Absorption is 1 − R − T, two measurements. Pixels whose image weight is within 1e-4 of the prune are not predicted (below). |
+| `--coating` table | measured lerp error ≤ **a third of the tolerance** | The plugin's 1024-entry table against the exact coat, at every predicted pixel's incidence: 1e-7 worst. |
+| `--falloff` | `kLightTol` | The film's R × cos^p off the screen's normal, with p from the Viewing Angle through `Controls.h`. |
+| `--polarised` | `kLightTol` | An 80×45 grid of pixels over the frame, against the 3D tracer, for None, Horizontal, Vertical, 45 and 135. A pixel is skipped, and counted, when a subsample passes within 1e-4 rig sizes (about 0.05 px) of a face's edge, or an image's weight is within 1e-4 of the prune: float and double may disagree there. |
+| `--mixer` units | **0** | Texture units 0, 1 and 2 bound to nothing, unit 0 active. |
 | `--bench` | not asserted | There is no threshold worth asserting on a shared machine. |
 
 **Negative controls live in the shipping class.**
@@ -200,7 +243,15 @@ real `rig::Build`:
 | `kFaultMirrored` | `--geometry` | The screen's picture mirrored left to right. Fails 1. |
 | `kFaultModesLocked` | `--ripple` | Every mode at the fundamental's frequency (CPU). Fails 1. |
 | `kFaultCrossfade` | `--opacity` | Opacity as a crossfade to the bare stage. Fails 2. |
-| `kFaultRotatedArms` | `--pyramid`, `--feed` | The common layout: arms as rotated copies, not reflections. Fails 8 and 4. |
+| `kFaultRotatedArms` | `--pyramid`, `--feed` | The common layout: arms as rotated copies, not reflections. Fails 17 and 9. |
+| `kFaultLastOnly` | `--polarised` | The polarisation forgotten at every interaction but the last (v0.1.0). Fails 2. |
+| `kFaultCoatSymmetric` | `--coating` | A metal coat reflecting the same from inside as from the air. Fails 2. |
+| `kFaultCoatIncoherent` | `--coating` | The coat's two faces added in intensity, not amplitude (CPU, the table). Fails 2. |
+| `kFaultOneIndex` | `--fresnel` | One index for all three channels: no dispersion (CPU). Fails 10. |
+| `kFaultFalloffOff` | `--falloff` | Every screen Lambertian, whatever Viewing Angle says. Fails 2. |
+| `kFaultAboveAsBelow` | `--geometry`, `--pyramid`, `--feed` | Screen Above with Below's picture maps and feed (CPU). Fails 1, 9 and 5. |
+| `kFaultClockwise` | `--fresnel` | The polarisation angle taken clockwise: 45 and 135 swapped (CPU). Fails 2. |
+| `kFaultLeaveBound` | `--mixer` | The coat's table left bound on unit 2, and unit 2 left active (CPU). Fails 1. |
 
 ### Would this hold on another rasteriser, at another raster?
 
@@ -238,14 +289,17 @@ refraction.
   bytes.
 
 **`tools/mutate.sh`** copies the tree once and builds arm64-only. Then, for
-each of **13** one-character mutants, it recompiles the one file and runs the
-named check. **13 of 13 are caught:**
+each of **22** one-character mutants, it recompiles the one file and runs the
+named check. **22 of 22 are caught:**
 
 | Mutant | Check that catches it |
 |---|---|
 | r_p's numerator `-` → `+` | `--fresnel` |
-| a polarised source's p share `( 1.0 - fs )` → `+` | `--fresnel` |
-| the transmitted series `( 1.0 - Rs*Rs*tau2 )` → `+` | `--energy` |
+| a polarised source seen with Q's s-p cross term negated | `--polarised` |
+| a sheet's internal echoes summed as an alternating series, `( 1.0 - b.s )` → `+` | `--energy` |
+| Q turned into the next face's s and p with its new cross term signed wrong, `( qp - qs )` → `+` | `--polarised` |
+| the screen's falloff measured off its back, `-r.d.y` → `+` | `--falloff` |
+| the coat's table interpolated toward the wrong neighbour, `i + 1` → `i - 1` | `--coating` |
 | the back image walked the wrong way along the pane | `--double` |
 | the pane's screen picture shifted, `P.x - r.x` → `+` | `--geometry` |
 | every feed arm sampled half a clip to one side | `--feed` |
@@ -254,8 +308,22 @@ named check. **13 of 13 are caught:**
 | every mode's frequency over the wrong fundamental (C++) | `--ripple` |
 | a feed arm's depth `w / aspect` → `w * aspect` (C++) | `--feed` |
 | arm 0 pointing up the picture (C++) | `--feed` |
+| the Above rig's camera not reflected about the rig's centre (C++) | `--geometry` |
+| every channel given green's index, `c` → `1` (C++) | `--fresnel` |
+| the polarisation angle taken clockwise, `+ py` → `- py` (C++) | `--fresnel` |
+| Airy's denominator for s with the echo signed wrong (C++, `Coating.cpp`) | `--coating` |
+| the coat seen from inside without r' = −r (C++, `Coating.cpp`) | `--coating` |
 | Src's MaxUV square, `maxSrc.t` → `maxSrc.s` (C++) | `--mixer` |
+| unit 2 left active after the coat's table is unbound, `+ 1` → `+ 2` (C++) | `--mixer` |
 | Opacity dividing the source's light (C++) | `--opacity` |
+
+**A blind spot, measured.** Q's turn into a new face's s and p has two
+cross terms in its new diagonal, ±2 c sn qr. qr is zero until a ray has turned
+between two planes of incidence, so those terms reach the picture only at a
+**third** face. Flipping one moved no measured pixel by as much as 3e-7, in
+any `--polarised` rig. No check can see them, and `mutate.sh` carries none.
+They are the rotation as derived, and the harness's tracer has them in its
+own form.
 
 `Controls.cpp` has no mutants, on purpose. The harness reads what it asked for
 back through `Controls.h`, so a wrong mapping moves the plugin and the
@@ -339,8 +407,39 @@ times the tolerance. Three sides passed.
 - `verify.sh` still takes minutes, most of them `--fresnel` (bisection) and
   `--additive` on the software renderer.
 
+**The thick coated pane was off by 2–7e-5, which looked like a model error.**
+
+- It was the prune. A back image of aluminium-coated glass, seen from
+  inside, falls near 1/8192 of the brightest light, and the plugin rightly
+  stopped following it.
+- `kPruneLight` moved to `Controls.h`, and the harness prunes each image as
+  the plugin does: the image's weight, at its brightest channel and
+  polarisation, against the prune.
+- A pixel whose image is within 1e-4 of the prune either way is not
+  predicted: float and double may fall on different sides of it.
+
+**Titanium dioxide is not lossless.** The self-check that R + T = 1 for a
+clear coat failed by 5e-5. Siefke's k is 5.4e-6 in blue, and over a quarter
+wave that is real absorption. The bound is now 1e-4 with that reason, and
+the picture compares R + T against the model's own absorption.
+
+**The apex-up pyramid failed from azimuth ±90 and with three sides.** Two
+harness errors, not the plugin's:
+
+- Overhead, face j reflects arm (n − j) mod n, not arm j: the mirror is the
+  other way up (`armUnder`).
+- The far arm, seen directly through the pyramid, overlapped the upper dots
+  as the lower ones overlap it apex down. Apex up, the dots are in the
+  clip's lower part (`kLowTriangle`).
+- From 15° below, the overhead screen is seen directly through the faces,
+  across the ghost. The view is from 10° up instead.
+
+**`kPepperFragment` outgrew two raw strings.** Each piece is under MSVC's
+16 KB literal cap; there are now three, and `glslc.sh` joins any number.
+
 **Azimuth looked dead to the sweep.** −180° and +180° are the same seat. The
-sweep moves it from 0° to 90°.
+sweep moves it from 0° to 90°. Coat Thickness is dead with no coat, so it is
+swept with Coating = Aluminium.
 
 **oxbow's selftest cannot drive a mixer.** It is an effect host, so it hands
 the plugin one input. That makes it a useful assertion: the mixer must
@@ -357,8 +456,9 @@ the plugin one input. That makes it a useful assertion: the mixer must
 | `source/MixerEntry.cpp`, `source/FeedEntry.cpp` | one registration each, compiled into their own bundle only |
 | `source/Names.h` | ids and display names, shared with the harness |
 | `source/Rig.{h,cpp}` | the geometry, in double: faces, screen, camera, feed arms, ripple modes |
-| `source/Controls.{h,cpp}` | every host 0..1 ↔ physical mapping, the sheets' indices, option names |
-| `source/Shaders.{h,cpp}` | `kVersion`, `kVertex`, `kCommon` (sRGB, the feed lookup, fault bits), `kFeedFragment`, `kPepperFragment` (two adjacent raw strings — MSVC's 16 KB literal cap) |
+| `source/Controls.{h,cpp}` | every host 0..1 ↔ physical mapping, the sheets' and coats' indices per channel, option names |
+| `source/Coating.{h,cpp}` | the coat: one layer's Airy sum, in double, and the table the shader reads |
+| `source/Shaders.{h,cpp}` | `kVersion`, `kVertex`, `kCommon` (sRGB, the feed lookup, fault bits), `kFeedFragment`, `kPepperFragment` (three adjacent raw strings — MSVC's 16 KB literal cap) |
 | `source/Timing.{h,cpp}` | relay's host clock |
 | `source/Diag.{h,cpp}` | the log, `~/Library/Logs/pepper/`, or `PEPPER_LOG_DIR` |
 | `source/StoatworksAbout*.h` | the About block (provisional hand copy; see Notes) |
@@ -383,15 +483,54 @@ the plugin one input. That makes it a useful assertion: the mixer must
   - Source Level +2.5 stops makes the ghost read well and makes the directly
     seen screen clip. That is roughly a phone at full brightness, and it is
     what a real pyramid looks like from a seat a little above.
-- **Polarisation is applied at the last interaction only.** Earlier ones use
-  the unpolarised mean: their s/p difference is a few percent of a second-order
-  path.
-  - Horizontal and Vertical are relative to the screen's picture.
+- **Polarisation is carried through every interaction** (above). The source
+  is None, Horizontal, Vertical, 45 Degrees or 135 Degrees, relative to the
+  screen's picture, counter-clockwise from its horizontal as the picture is
+  seen face on.
   - For the pane, Vertical is p and vanishes at Brewster.
-- **The sheets' indices** are nominal: PET 1.65, float glass 1.52, acrylic
-  1.49, polycarbonate 1.585.
-  - Real biaxially oriented PET is **birefringent** (about 1.64–1.67 by
-    direction). It is not modelled, nor are any foil coatings.
+  - At 45° and 135° each pixel's s and p shares differ across the ghost, so
+    each is lopsided (up to 0.169 at 640×360) and the two are mirror images.
+  - In the pyramid, light reaching the eye through two faces has turned
+    between two planes of incidence, and Horizontal and Vertical differ by
+    0.18 to 0.51 there. v0.1.0's last-interaction approximation had that
+    wrong; it is the negative control.
+- **The sheets' indices** are dispersion fits, evaluated at each channel's
+  wavelength. At the d line (587.6 nm) they are PET 1.65, float glass 1.523,
+  acrylic 1.491 and polycarbonate 1.585. The sources are in `Controls.cpp`.
+  At green's 549 nm, which the rays bend by, they are 1.655, 1.525, 1.493
+  and 1.589.
+- **Dispersion.** Fresnel, the coat and the tint's path use each channel's
+  index. The rays bend by green's, so a thick sheet's back images land in one
+  place for all three channels. Tracing each channel's rays would triple
+  them. What that leaves out is measured, not argued: `--double` prints it.
+  The red and blue back images would be **0.05 px** apart at 640×360 for 4 %
+  float glass, 0.7 % of the image's 8 px offset. For polycarbonate and PET the
+  ratio is 1.7 %. It scales with the raster: at 4K, full thickness, about
+  0.3 px for glass and 0.8 px for polycarbonate. A film has no fringe: its
+  images coincide. A real 12 mm plate under a 1.8 m ghost is a sixth of the
+  full thickness.
+- **Coatings** are one layer on the side the declared normal points to — the
+  screen's side, the audience's — interfering (Airy), because a coat is thin
+  next to the light's coherence length. The sheet under it stays incoherent.
+  - **Aluminium**, 0 to 10 nm, from Rakić's bulk fit. 5 nm reflects about
+    0.47 from the air, 0.39 from inside, and absorbs 0.14–0.20. A real
+    evaporated film a few nm thick, with its oxide skin, differs. Treat the
+    thickness as the control it is, not a recipe.
+  - **Titanium dioxide**, 0 to 2 quarter waves at 549 nm (0.5 is one, 56.3 nm),
+    from Siefke's ALD film. Clear, so it reflects the same from either side.
+  - Musion-style foils are coated, and the coat is what makes the ghost bright
+    enough: a bare PET film reflects 13 % at 45°.
+- **The screen's falloff** is the generalised Lambertian: L ∝ cos^p off its
+  normal, with p chosen so L halves at half the Viewing Angle. 180° is
+  Lambertian (p = 0), the default. An LED tile is typically 120°–160°. A
+  real panel's curve is not a power of cos; this is the one-number model.
+- **Screen above** hangs the pane from the screen, or stands the pyramid apex
+  up under it. Seen from the audience the picture is a mirror image of the
+  Below case: the overhead screen's picture is laid out mirrored, top away
+  from the audience, and the feed's arms point top inward. `--geometry`,
+  `--pyramid` and `--feed` predict all of it in real space. The keystone
+  inverts: at 40° the ghost is narrower at the top (0.9577), where Below it
+  is wider (1.0442).
 - **Ripple is a membrane**, rather than noise. Each face's bounding rectangle,
   fixed at its edges, rings in six modes: (1,1), (2,1), (1,2), (2,2), (3,1) and
   (1,3).
@@ -414,13 +553,24 @@ the plugin one input. That makes it a useful assertion: the mixer must
     and the rotated layout is the negative control. Text in a rotated-copies
     feed should read backwards in a real pyramid. That is worth checking against
     one (Open questions).
-- **Not modelled**, stated in the README:
-  - dispersion;
-  - scattering, haze and dust;
-  - the screen's angular falloff;
-  - display cases with the screen above;
-  - apex-up pyramids;
-  - a stage with depth: Dest is a picture, not a 3D set.
+- **Not modelled**, stated in the README, with why:
+  - **Haze, scattering and dust.** Haze is light the sheet scatters forward
+    and back into a wide cone. A fraction h of the light meeting the sheet
+    (typically under 0.5 % for float glass, 0.5–3 % for PET film) becomes a veil, which is a
+    blur of the screen and the stage over a large part of the frame. A
+    per-pixel ray tracer cannot see its neighbours. It would need a blurred
+    copy of each input: a mip chain or a separable blur in passes of its own.
+    That is a second render target and a pipeline the plugin does not have.
+    A host's own texture cannot be mipmapped in place, and a uniform veil from
+    the mean picture would still need that mean. A follow-up, if wanted.
+  - **Birefringent PET.** Drawn polyester is biaxial: about 1.64 to 1.67 in
+    the plane, and its axes turn across a roll. A 12 µm film is then a
+    waveplate of half a wave or more, varying with angle and position. That
+    changes the polarisation of the back surface's light, and shows as
+    coloured fringes only through a polariser. Modelling it needs the film's
+    retardance and axis at every point, which nobody has for their foil. The
+    in-plane index is used.
+  - **A stage with depth**: Dest is a picture, not a 3D set.
 - **No CI workflow.** There is no repository. If one is made it would be
   private by default, and private repos get no workflows (`~/.claude/CLAUDE.md`).
   `verify.sh` is the release check, run locally.
@@ -452,11 +602,14 @@ These are the README's Status table, from `pgtest`, `tools/mutate.sh`,
 - **The optics, as stated.** The harness proves that the plugin computes the
   model correctly, not that the model is the world:
   - the indices;
-  - an isotropic, uncoated sheet;
+  - an isotropic sheet;
+  - a coat as one uniform layer with bulk or ALD-film indices;
   - Fresnel for a smooth surface;
-  - the membrane modes.
-- That an LCD's output is polarised along its picture's horizontal or vertical.
-  Many panels are at 45°, which this plugin cannot express.
+  - the membrane modes;
+  - a screen's falloff as a power of cos.
+- That an LCD's output is polarised along one of four directions in its
+  picture: horizontal, vertical, 45° or 135°. Those cover the common panels;
+  another angle cannot be expressed.
 - That the generated cards stand for real footage. The figures are the
   harness's cards, not Resolume's demo media.
 
@@ -465,12 +618,10 @@ These are the README's Status table, from `pgtest`, `tools/mutate.sh`,
 - **Does a rotated-copies feed read mirrored in a real pyramid?** The geometry
   says yes, and SW Pepper Feed draws reflections for that reason. A phone and a
   pyramid with some text in the clip would settle it in a minute.
-- **What is in a real foil?** Allan knows real foil rigs, and Musion-style foils
-  are probably coated. Is a bare PET film's 13 % at 45° (unpolarised, both
-  surfaces) close to what a real foil reflects, or should Sheet carry a
-  "coated foil" entry with a measured reflectance?
-- **Screen-above rigs** (display cases, some theatre rigs) and **LCDs
-  polarised at 45°**: worth adding?
+- **What is in a real foil?** Coating now offers aluminium and titanium
+  dioxide, from published indices. Does a real Musion-style foil reflect what
+  either gives at some thickness? A measured reflectance at 45° would pin it.
+- **Haze**: worth the second pass it would take (Not modelled, above)?
 - **Release**: needs Allan's go-ahead.
   - The repository's visibility and CI follow from that.
   - The About block and ATTRIBUTIONS.md then move into the backend's lists.

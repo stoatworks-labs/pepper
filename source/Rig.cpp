@@ -98,6 +98,26 @@ void ringModes( Face& f, int faceIndex, const Inputs& in )
 }
 } // namespace
 
+void PictureAxes( ScreenMap map, Vec3& px, Vec3& py )
+{
+	switch( map )
+	{
+	case ScreenMap::PaneFloor:
+		px = { 1.0, 0.0, 0.0 };
+		py = { 0.0, 0.0, 1.0 };
+		break;
+	case ScreenMap::AsIsMirrored:
+	case ScreenMap::FeedMirrored:
+		px = { -1.0, 0.0, 0.0 };
+		py = { 0.0, 0.0, -1.0 };
+		break;
+	default:
+		px = { 1.0, 0.0, 0.0 };
+		py = { 0.0, 0.0, -1.0 };
+		break;
+	}
+}
+
 void FeedArm( int sides, double centre, double aspect, double& w, double& d )
 {
 	const double r0 = 0.5 * centre;
@@ -120,7 +140,14 @@ Setup Build( const Inputs& in )
 	Setup s;
 	s.rig        = in.rig;
 	s.sheetAngle = in.angle;
-	s.eta        = IndexOf( static_cast< SheetKind >( in.sheet ) );
+	for( int c = 0; c < 3; ++c )
+		s.eta[ c ] = ChannelIndex( static_cast< SheetKind >( in.sheet ), c );
+	s.etaRay  = s.eta[ kRayChannel ];
+	s.coating = in.coating;
+	s.coatNm  = in.coating == static_cast< int >( CoatingKind::None ) ? 0.0 : in.coatNm;
+	s.mount   = in.mount;
+	s.falloff = FalloffPower( in.viewAngle );
+	const bool above = in.mount == static_cast< int >( MountKind::Above ) && !in.aboveAsBelow;
 	for( int c = 0; c < 3; ++c )
 		s.tint[ c ] = std::clamp( in.tint[ c ], 0.0, 1.0 );
 	s.sourceGain  = in.sourceGain;
@@ -152,15 +179,12 @@ Setup Build( const Inputs& in )
 		f.width  = 2.0 * f.half;
 		ringModes( f, 0, in );
 
-		s.map  = ScreenMap::PaneFloor;
+		//Overhead, the picture's top goes away from the audience.
+		s.map  = above ? ScreenMap::AsIs : ScreenMap::PaneFloor;
 		s.xMin = -0.5 * A;
 		s.xMax = 0.5 * A;
 		s.zMin = 0.0;
 		s.zMax = 1.0;
-		if( in.polarisation == static_cast< int >( Polarisation::Horizontal ) )
-			s.polarisation = { 1.0, 0.0, 0.0 };
-		else if( in.polarisation == static_cast< int >( Polarisation::Vertical ) )
-			s.polarisation = { 0.0, 0.0, 1.0 };
 	}
 	else
 	{
@@ -190,7 +214,12 @@ Setup Build( const Inputs& in )
 			ringModes( f, j, in );
 		}
 
-		s.map = in.screen == static_cast< int >( ScreenKind::AsIs ) ? ScreenMap::AsIs : ScreenMap::Feed;
+		const bool asIs = in.screen == static_cast< int >( ScreenKind::AsIs );
+		if( above )
+			s.map = asIs ? ScreenMap::AsIsMirrored : ScreenMap::FeedMirrored;
+		else
+			s.map = asIs ? ScreenMap::AsIs : ScreenMap::Feed;
+		s.feedFlip = above;
 		//The picture's short side is the unit.
 		const double halfX = A >= 1.0 ? 0.5 * A : 0.5;
 		const double halfZ = A >= 1.0 ? 0.5 : 0.5 / A;
@@ -198,10 +227,14 @@ Setup Build( const Inputs& in )
 		s.xMax             = halfX;
 		s.zMin             = -halfZ;
 		s.zMax             = halfZ;
-		if( in.polarisation == static_cast< int >( Polarisation::Horizontal ) )
-			s.polarisation = { 1.0, 0.0, 0.0 };
-		else if( in.polarisation == static_cast< int >( Polarisation::Vertical ) )
-			s.polarisation = { 0.0, 0.0, -1.0 };
+	}
+
+	if( in.polarisation != static_cast< int >( Polarisation::None ) )
+	{
+		Vec3 px, py;
+		PictureAxes( s.map, px, py );
+		const double chi = PolarisationAngle( static_cast< Polarisation >( in.polarisation ) ) * ( in.clockwise ? -1.0 : 1.0 );
+		s.polarisation   = px * std::cos( chi ) + py * std::sin( chi );
 	}
 
 	FeedArm( in.sides, in.centre, A, s.armW, s.armD );
@@ -215,6 +248,18 @@ Setup Build( const Inputs& in )
 	s.right         = normalize( cross( s.forward, Vec3{ 0.0, 1.0, 0.0 } ) );
 	s.up            = cross( s.right, s.forward );
 	s.tanHalfY      = std::tan( 0.5 * kFieldOfViewDeg * kPi / 180.0 );
+
+	if( in.mount == static_cast< int >( MountKind::Above ) )
+	{
+		//The camera, reflected into the Below rig (Rig.h): y negated about
+		//the rig's centre. right x up then points AWAY from the eye -- a
+		//mirror's image -- which is what makes every pixel's ray the
+		//reflection of the Above rig's.
+		s.eye.y     = 2.0 * s.target.y - s.eye.y;
+		s.forward.y = -s.forward.y;
+		s.right.y   = -s.right.y;
+		s.up.y      = -s.up.y;
+	}
 	return s;
 }
 

@@ -26,6 +26,9 @@ GUTTER_RGB = (16, 16, 18)
 #   Azimuth   -180..180 deg linear (0.5 = 0, 0.625 = 45)
 #   Source Level -3..+6 stops      (0.3333 = 0 stops)
 #   Distance 1..12 rig sizes, geometric
+#   Viewing Angle 40..180 deg linear (1 = 180, Lambertian; 0.1429 = 60)
+#   Coat Thickness: aluminium 0..10 nm (0.5 = 5 nm); titanium dioxide 0..2
+#     quarter waves at 549 nm (0.5 = one, 56.3 nm)
 FIGURES = {
     # The pane, as shipped: a PET foil at 45 degrees, the figure card on the
     # floor screen, the stage card behind.
@@ -57,6 +60,37 @@ FIGURES = {
         ("pepper", {"Ripple": "0", "Sheet Angle": "0.2", "Source Level": "0.3333", "Polarisation": "Vertical", "--input-b": "white"}, 480, 270),
         ("pepper", {"Ripple": "0", "Sheet Angle": "0.2", "Source Level": "0.3333", "Polarisation": "Horizontal", "--input-b": "white"}, 480, 270),
     ]),
+    # Polarised at 45 and 135 degrees in the picture, the white screen in a
+    # PET sheet at 33 degrees as in "brewster": s and p in different shares
+    # across the ghost, so each is lopsided, and the two are mirror images.
+    "diagonal": (2, [
+        ("pepper", {"Ripple": "0", "Sheet Angle": "0.2", "Source Level": "0.3333", "Polarisation": "45 Degrees", "--input-b": "white"}, 480, 270),
+        ("pepper", {"Ripple": "0", "Sheet Angle": "0.2", "Source Level": "0.3333", "Polarisation": "135 Degrees", "--input-b": "white"}, 480, 270),
+    ]),
+    # The foil bare, with 5 nm of aluminium, and with a quarter wave of
+    # titanium dioxide, on the audience's side, the source as shipped: the
+    # coats make the ghost brighter and the stage darker.
+    "coatings": (3, [
+        ("pepper", {"Ripple": "0"}, 480, 270),
+        ("pepper", {"Ripple": "0", "Coating": "Aluminium"}, 480, 270),
+        ("pepper", {"Ripple": "0", "Coating": "Titanium Dioxide"}, 480, 270),
+    ]),
+    # The screen's falloff: a white Lambertian screen against one whose light
+    # halves 30 degrees off its normal, from a level seat and from 25 degrees
+    # up. Level, a 45-degree sheet shows the floor screen square on, so only
+    # the edges dim; from above, all of it is seen off axis.
+    "falloff": (2, [
+        ("pepper", {"Ripple": "0", "Source Level": "0.3333", "--input-b": "white"}, 480, 270),
+        ("pepper", {"Ripple": "0", "Source Level": "0.3333", "Viewing Angle": "0.1429", "--input-b": "white"}, 480, 270),
+        ("pepper", {"Ripple": "0", "Source Level": "0.3333", "Elevation": "0.5625", "--input-b": "white"}, 480, 270),
+        ("pepper", {"Ripple": "0", "Source Level": "0.3333", "Viewing Angle": "0.1429", "Elevation": "0.5625", "--input-b": "white"}, 480, 270),
+    ]),
+    # The screen overhead: the pane hanging from it, and a pyramid standing
+    # apex up under it, from 10 degrees up.
+    "above": (2, [
+        ("pepper", {"Ripple": "0", "Mount": "Screen Above"}, 640, 360),
+        ("pepper", {"Rig": "Pyramid", "Sheet": "Acrylic", "Mount": "Screen Above", "Elevation": "0.375"}, 640, 360),
+    ]),
     # The pyramid on a phone, four acrylic faces at 45 degrees: from a seat 10 degrees up, square on to a face
     # and on a corner; three sides; and from 60 degrees up, where the screen's
     # own feed is seen directly through the faces.
@@ -67,10 +101,13 @@ FIGURES = {
         ("pepper", {"Rig": "Pyramid", "Sheet": "Acrylic", "Elevation": "1"}, 640, 360),
     ]),
     # SW Pepper Feed: the figure card laid out for a real four- and
-    # three-sided pyramid.
+    # three-sided pyramid, apex down on the screen (top row) and apex up
+    # under an overhead one (bottom row: the arms' tops point inward).
     "feed": (2, [
         ("feed", {}, 640, 360),
         ("feed", {"Sides": "Three"}, 640, 360),
+        ("feed", {"Mount": "Screen Above"}, 640, 360),
+        ("feed", {"Sides": "Three", "Mount": "Screen Above"}, 640, 360),
     ]),
 }
 

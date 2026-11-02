@@ -15,6 +15,9 @@
         pgtest --energy              a clear film: R + T = 1, per pixel, every sheet
         pgtest --fresnel             Brewster's null and Abeles' identity, out of the picture
         pgtest --double              a thick pane's images: their weights and where they land
+        pgtest --coating             a coated sheet: Al or TiO2, interfering, from both sides
+        pgtest --falloff             the screen's luminance falls off its normal as cos^p
+        pgtest --polarised           polarised light through the pyramid, against a 3D trace
         pgtest --geometry            dots land where the mirror puts them; the keystone
         pgtest --ripple              the foil rings at its frame's mode frequencies, by FFT
         pgtest --opacity             Opacity is the source's light; at 0 the glass stays
@@ -344,6 +347,31 @@ int runMixer()
 		rig.inputs[ 0 ] = &rig.inStruct;
 		Check( rig.Render(), "SW Pepper Feed: and a real input still renders" );
 	}
+	//A host's GL state as the plugin found it: no texture left on any of
+	//the three units it uses (the coat's table is the third), unit 0 active.
+	auto unitsClean = [ & ]( int fault ) {
+		MixRig rig;
+		if( !rig.Init( 320, 180, false, fault ) )
+			return;
+		rig.Set( "Coating", static_cast< float >( CoatingKind::Aluminium ) );
+		rig.UploadDest( videoCard( 320, 180 ) );
+		rig.UploadSrc( figureCard( 320, 180 ) );
+		rig.Render();
+		GLint active = 0, bound[ 3 ] = { -1, -1, -1 };
+		glGetIntegerv( GL_ACTIVE_TEXTURE, &active );
+		for( int u = 0; u < 3; ++u )
+		{
+			glActiveTexture( GL_TEXTURE0 + u );
+			glGetIntegerv( GL_TEXTURE_BINDING_2D, &bound[ u ] );
+		}
+		glActiveTexture( GL_TEXTURE0 );
+		Check( active == GL_TEXTURE0 && bound[ 0 ] == 0 && bound[ 1 ] == 0 && bound[ 2 ] == 0,
+		       fmt( "after a coated frame, texture units 0, 1 and 2 are empty (%.0f, %.0f, ", bound[ 0 ], bound[ 1 ] ) + fmt( "%.0f) and unit 0 is active (unit %.0f)", bound[ 2 ], active - GL_TEXTURE0 ) );
+	};
+	std::printf( "\n" );
+	unitsClean( kFaultNone );
+	const int leaked = failuresOf( [ & ] { unitsClean( kFaultLeaveBound ); } );
+	Negative( leaked > 0, fmt( "the coat's table left bound on unit 2 fails %.0f assertion(s)", leaked ) );
 	const int outs[ 2 ][ 2 ] = { { 320, 200 }, { 320, 180 } };
 	for( const auto& o : outs )
 	{
@@ -356,9 +384,10 @@ int runMixer()
 }
 
 //---------------------------------------------------------------------------
-// The pane's predicted transmittance of the stage at one pixel: the mean of
-// its four subsamples, each the clear film's unpolarised T at its own
-// incidence, or 1 where the subsample does not meet the pane.
+// The pane's predicted transmittance of the stage at one pixel, for one
+// channel's index: the mean of its four subsamples, each the clear film's
+// unpolarised T at its own incidence, or 1 where the subsample does not meet
+// the pane.
 //---------------------------------------------------------------------------
 double predictedT( const World& w, double eta, int x, int y )
 {
@@ -439,14 +468,13 @@ void additiveCheck( int W, int H, int fault, bool gammaNegative )
 			for( int y = 0; y < H; ++y )
 				for( int x = 0; x < W; ++x )
 				{
-					const double T     = predictedT( w, a.eta, x, y );
 					const size_t at    = ( static_cast< size_t >( y ) * W + x ) * 4;
 					const double alpha = stage[ at + 3 ] / 255.0;
 					const double shownA = out[ at + 3 ];
 					for( int c = 0; c < 3; ++c )
 					{
 						//Linear Light off: the stage's light is its signal, premultiplied.
-						const double want = T * stage[ at + c ] / 255.0 * alpha;
+						const double want = predictedT( w, a.eta[ c ], x, y ) * stage[ at + c ] / 255.0 * alpha;
 						const double got  = out[ at + c ] * shownA;
 						if( pass == 0 )
 							worstBlack = std::max( worstBlack, std::fabs( got - want ) );
@@ -507,11 +535,10 @@ void additiveCheck( int W, int H, int fault, bool gammaNegative )
 			for( int y = 0; y < H; ++y )
 				for( int x = 0; x < W; ++x )
 				{
-					const double T  = predictedT( w, a.eta, x, y );
 					const size_t at = ( static_cast< size_t >( y ) * W + x ) * 4;
 					for( int c = 0; c < 3; ++c )
 					{
-						const double want = T * a.stageGain * decodeSrgb( stage[ at + c ] / 255.0 * stage[ at + 3 ] / 255.0 );
+						const double want = predictedT( w, a.eta[ c ], x, y ) * a.stageGain * decodeSrgb( stage[ at + c ] / 255.0 * stage[ at + 3 ] / 255.0 );
 						const double got  = decodeSrgb( pics[ 1 ][ at + c ] * pics[ 1 ][ at + 3 ] );
 						worstStage        = std::max( worstStage, std::fabs( got - want ) );
 					}
@@ -588,7 +615,7 @@ void energyCheck( int W, int H, int fault, bool tinted, int onlySheet = -1 )
 						for( const auto& q : kSub )
 						{
 							const PaneHit h = paneRay( w, rayAt( w, x + 0.5 + q[ 0 ], y + 0.5 + q[ 1 ] ) );
-							const Fresnel f = fresnelAt( h.cosi, a.eta );
+							const Fresnel f = fresnelAt( h.cosi, a.eta[ c ] );
 							const double tp = std::pow( a.tint[ c ], 1.0 / f.cosT );
 							sum += 0.5 * ( filmR( f.Rs, tp ) + filmT( f.Rs, tp ) + filmR( f.Rp, tp ) + filmT( f.Rp, tp ) );
 						}
@@ -609,7 +636,7 @@ void energyCheck( int W, int H, int fault, bool tinted, int onlySheet = -1 )
 			           + fmt( " (%.0f pixels, worst %.2g off the prediction, least loss %.3f)", n, worst, leastLoss ) );
 		else
 			Check( n > 1000 && worst <= kLightTol,
-			       std::string( "  " ) + sheet + fmt( " (n %.3f): R + T = 1 at every pixel (%.0f pixels, worst %.2g, tolerance %.0e)", a.eta, n, worst, kLightTol ) );
+			       std::string( "  " ) + sheet + fmt( " (n %.4f to %.4f, red to blue): R + T = 1 at every pixel", a.eta[ 0 ], a.eta[ 2 ] ) + fmt( " (%.0f pixels, worst %.2g, tolerance %.0e)", n, worst, kLightTol ) );
 	}
 }
 
@@ -663,13 +690,14 @@ double predictedPolarisedR( const World& w, double eta, Vec3 E, int x, int y, bo
 //---------------------------------------------------------------------------
 struct BrewsterResult
 {
-	double nullRow = 0.0, predictedRow = 0.0, ratio = 1.0, ratioBound = 0.0;
-	bool found = false;
+	double n[ 3 ] = {}, nullRow[ 3 ] = {}, predictedRow[ 3 ] = {}, ratio[ 3 ] = { 1, 1, 1 }, ratioBound[ 3 ] = {};
+	bool found[ 3 ] = {};
 };
 
 /// Renders the centre column with the source polarised p (Vertical) and s
-/// (Horizontal) at the sheet angle that puts Brewster's angle on the level
-/// ray, and finds the p ghost's null.
+/// (Horizontal) at the sheet angle that puts green's Brewster angle on the
+/// level ray, and finds each channel's p null: each channel's index is its
+/// own, so red's null sits above green's and blue's below.
 BrewsterResult brewster( int W, int H, int fault, int sheet )
 {
 	BrewsterResult r;
@@ -678,59 +706,72 @@ BrewsterResult brewster( int W, int H, int fault, int sheet )
 		return r;
 	physics( rig );
 	rig.Set( "Sheet", static_cast< float >( sheet ) );
-	const double n = IndexOf( static_cast< SheetKind >( sheet ) );
-	rig.Set( "Sheet Angle", ParamForSheetAngle( 0.5 * kPi - std::atan( n ) ) );
+	const double green = ChannelIndex( static_cast< SheetKind >( sheet ), kRayChannel );
+	rig.Set( "Sheet Angle", ParamForSheetAngle( 0.5 * kPi - std::atan( green ) ) );
 	rig.UploadDest( flatField( W, H, kBlack ) );
 	rig.UploadSrc( flatField( W, H, kWhite ) );
 	const Asked a = asked( rig.plugin );
 	const World w = worldFor( a, W, H, static_cast< double >( W ) / H );
 
-	std::vector< double > p( H ), s( H );
+	std::vector< double > p[ 3 ], s[ 3 ];
+	for( int c = 0; c < 3; ++c )
+	{
+		p[ c ].resize( H );
+		s[ c ].resize( H );
+	}
 	for( int pass = 0; pass < 2; ++pass )
 	{
 		rig.Set( "Polarisation", pass == 0 ? 2.0f : 1.0f );
 		rig.Render();
 		const ImageF img = rig.PixelsF();
-		for( int y = 0; y < H; ++y )
-			( pass == 0 ? p : s )[ y ] = 0.5 * ( channel( img, W, W / 2 - 1, y, 0 ) + channel( img, W, W / 2, y, 0 ) );
+		for( int c = 0; c < 3; ++c )
+			for( int y = 0; y < H; ++y )
+				( pass == 0 ? p : s )[ c ][ y ] = 0.5 * ( channel( img, W, W / 2 - 1, y, c ) + channel( img, W, W / 2, y, c ) );
 	}
 	std::vector< bool > valid( H, false );
 	for( int y = 0; y < H; ++y )
 		valid[ y ] = pixelOnScreen( w, W / 2 - 1, y, 0.002 ) && pixelOnScreen( w, W / 2, y, 0.002 );
-	int best = -1;
-	for( int y = 1; y + 1 < H; ++y )
-		if( valid[ y - 1 ] && valid[ y ] && valid[ y + 1 ] && ( best < 0 || p[ y ] < p[ best ] ) )
-			best = y;
-	if( best < 0 )
-		return r;
-	r.found          = true;
-	const double den = p[ best - 1 ] - 2.0 * p[ best ] + p[ best + 1 ];
-	r.nullRow        = best + 0.5 + ( den > 0.0 ? 0.5 * ( p[ best - 1 ] - p[ best + 1 ] ) / den : 0.0 );
-	r.ratio          = p[ best ] / s[ best ];
+	for( int c = 0; c < 3; ++c )
+	{
+		const std::vector< double >& pc = p[ c ];
+		const double n                  = a.eta[ c ];
+		r.n[ c ]                        = n;
+		int best                        = -1;
+		for( int y = 1; y + 1 < H; ++y )
+			if( valid[ y - 1 ] && valid[ y ] && valid[ y + 1 ] && ( best < 0 || pc[ y ] < pc[ best ] ) )
+				best = y;
+		if( best < 0 )
+			continue;
+		r.found[ c ]     = true;
+		const double den = pc[ best - 1 ] - 2.0 * pc[ best ] + pc[ best + 1 ];
+		r.nullRow[ c ]   = best + 0.5 + ( den > 0.0 ? 0.5 * ( pc[ best - 1 ] - pc[ best + 1 ] ) / den : 0.0 );
+		r.ratio[ c ]     = pc[ best ] / s[ c ][ best ];
 
-	//Where the level camera ray meets the sheet at incidence 90 - phi, a
-	//ray tilted up by alpha meets it at 90 - phi - alpha: the null is at
-	//alpha = 90 - phi - atan(n).
-	const double alpha = 0.5 * kPi - a.angle - std::atan( n );
-	r.predictedRow     = ( std::tan( alpha ) / w.tanY + 1.0 ) * 0.5 * H;
+		//Where the level camera ray meets the sheet at incidence 90 - phi, a
+		//ray tilted up by alpha meets it at 90 - phi - alpha: the null is at
+		//alpha = 90 - phi - atan(n).
+		const double alpha  = 0.5 * kPi - a.angle - std::atan( n );
+		r.predictedRow[ c ] = ( std::tan( alpha ) / w.tanY + 1.0 ) * 0.5 * H;
 
-	//The bound on the null's depth: the harness's own model of that pixel,
-	//its subsamples up to 7/8 px off the null and its columns off centre.
-	bool on = false;
-	const double modelP = 0.5 * ( predictedPolarisedR( w, n, { 0, 0, 1 }, W / 2 - 1, best, on ) + predictedPolarisedR( w, n, { 0, 0, 1 }, W / 2, best, on ) );
-	const double modelS = 0.5 * ( predictedPolarisedR( w, n, { 1, 0, 0 }, W / 2 - 1, best, on ) + predictedPolarisedR( w, n, { 1, 0, 0 }, W / 2, best, on ) );
-	r.ratioBound        = modelP / modelS;
+		//The bound on the null's depth: the harness's own model of that pixel,
+		//its subsamples up to 7/8 px off the null and its columns off centre.
+		bool on = false;
+		const double modelP = 0.5 * ( predictedPolarisedR( w, n, { 0, 0, 1 }, W / 2 - 1, best, on ) + predictedPolarisedR( w, n, { 0, 0, 1 }, W / 2, best, on ) );
+		const double modelS = 0.5 * ( predictedPolarisedR( w, n, { 1, 0, 0 }, W / 2 - 1, best, on ) + predictedPolarisedR( w, n, { 1, 0, 0 }, W / 2, best, on ) );
+		r.ratioBound[ c ]   = modelP / modelS;
+	}
 	return r;
 }
 
 struct AbelesResult
 {
-	double residual = 1.0, modelResidual = 0.0, floatBound = 0.0, Rs = 0.0, Rp = 0.0;
+	double residual = 0.0, modelResidual = 0.0, floatBound = 0.0, Rs = 0.0, Rp = 0.0;///< the worst channel; R of green
 };
 
 /// At incidence 45 degrees exactly, the reflectances of one surface obey
 /// R_p = R_s^2 (Abeles, 1950) whatever the index. Read off the film: its
-/// R_f = 2R/(1+R) inverts to R = R_f/(2 - R_f).
+/// R_f = 2R/(1+R) inverts to R = R_f/(2 - R_f). Each channel, at its own
+/// index.
 AbelesResult abeles( int W, int H, int fault, int sheet )
 {
 	AbelesResult r;
@@ -739,7 +780,6 @@ AbelesResult abeles( int W, int H, int fault, int sheet )
 		return r;
 	physics( rig );
 	rig.Set( "Sheet", static_cast< float >( sheet ) );
-	const double n = IndexOf( static_cast< SheetKind >( sheet ) );
 	rig.UploadDest( flatField( W, H, kBlack ) );
 	rig.UploadSrc( flatField( W, H, kWhite ) );
 
@@ -759,28 +799,39 @@ AbelesResult abeles( int W, int H, int fault, int sheet )
 		( std::acos( h.cosi ) > 45.0 * kDegree ? lo : hi ) = mid;
 	}
 	rig.Set( "Sheet Angle", ParamForSheetAngle( 0.5 * ( lo + hi ) ) );
-	const World w = worldFor( asked( rig.plugin ), W, H, static_cast< double >( W ) / H );
+	const Asked a = asked( rig.plugin );
+	const World w = worldFor( a, W, H, static_cast< double >( W ) / H );
 
-	double film[ 2 ];
+	double film[ 2 ][ 3 ];
 	for( int pass = 0; pass < 2; ++pass )
 	{
 		rig.Set( "Polarisation", pass == 0 ? 1.0f : 2.0f );
 		rig.Render();
-		film[ pass ] = channel( rig.PixelsF(), W, px, py, 0 );
+		const ImageF img = rig.PixelsF();
+		for( int c = 0; c < 3; ++c )
+			film[ pass ][ c ] = channel( img, W, px, py, c );
 	}
-	r.Rs       = film[ 0 ] / ( 2.0 - film[ 0 ] );
-	r.Rp       = film[ 1 ] / ( 2.0 - film[ 1 ] );
-	r.residual = std::fabs( r.Rp - r.Rs * r.Rs );
-	bool on    = false;
-	const double ms = predictedPolarisedR( w, n, { 1, 0, 0 }, px, py, on );
-	const double mp = predictedPolarisedR( w, n, { 0, 0, 1 }, px, py, on );
-	const double rs = ms / ( 2.0 - ms ), rp = mp / ( 2.0 - mp );
-	r.modelResidual = std::fabs( rp - rs * rs );
-	//What float roundoff can do to the measured residual: each film value
-	//good to kLightBound relative, through R = R_f / (2 - R_f) and R_s^2.
-	const double errS = kLightBound * film[ 0 ] * 2.0 / ( ( 2.0 - film[ 0 ] ) * ( 2.0 - film[ 0 ] ) );
-	const double errP = kLightBound * film[ 1 ] * 2.0 / ( ( 2.0 - film[ 1 ] ) * ( 2.0 - film[ 1 ] ) );
-	r.floatBound      = errP + 2.0 * r.Rs * errS;
+	for( int c = 0; c < 3; ++c )
+	{
+		const double Rs = film[ 0 ][ c ] / ( 2.0 - film[ 0 ][ c ] );
+		const double Rp = film[ 1 ][ c ] / ( 2.0 - film[ 1 ][ c ] );
+		if( c == kRayChannel )
+		{
+			r.Rs = Rs;
+			r.Rp = Rp;
+		}
+		r.residual      = std::max( r.residual, std::fabs( Rp - Rs * Rs ) );
+		bool on         = false;
+		const double ms = predictedPolarisedR( w, a.eta[ c ], { 1, 0, 0 }, px, py, on );
+		const double mp = predictedPolarisedR( w, a.eta[ c ], { 0, 0, 1 }, px, py, on );
+		const double rs = ms / ( 2.0 - ms ), rp = mp / ( 2.0 - mp );
+		r.modelResidual = std::max( r.modelResidual, std::fabs( rp - rs * rs ) );
+		//What float roundoff can do to the measured residual: each film value
+		//good to kLightBound relative, through R = R_f / (2 - R_f) and R_s^2.
+		const double errS = kLightBound * film[ 0 ][ c ] * 2.0 / ( ( 2.0 - film[ 0 ][ c ] ) * ( 2.0 - film[ 0 ][ c ] ) );
+		const double errP = kLightBound * film[ 1 ][ c ] * 2.0 / ( ( 2.0 - film[ 1 ][ c ] ) * ( 2.0 - film[ 1 ][ c ] ) );
+		r.floatBound      = std::max( r.floatBound, errP + 2.0 * Rs * errS );
+	}
 	return r;
 }
 
@@ -793,16 +844,21 @@ void fresnelCheck( int W, int H, int fault, bool brewsterOnly )
 	{
 		const BrewsterResult b = brewster( W, H, fault, k );
 		const char* sheet      = NameOf( static_cast< SheetKind >( k ) );
-		Check( b.found && std::fabs( b.nullRow - b.predictedRow ) <= kRowTol,
-		       std::string( "  " ) + sheet + fmt( ": the p ghost's null is at row %.3f, Brewster's angle puts it at %.3f (tolerance %.1f px)", b.nullRow, b.predictedRow, kRowTol ) );
-		Check( b.found && b.ratio <= kRatioTol && 3.0 * b.ratioBound <= kRatioTol,
-		       std::string( "  " ) + sheet + fmt( ": there p/s is %.2g -- p vanishes, s does not (tolerance %.0e, the subsample spread bounds it at %.1g)", b.ratio, kRatioTol, b.ratioBound ) );
+		static const char* const kChannelName[ 3 ] = { "red", "green", "blue" };
+		for( int c = 0; c < 3; ++c )
+		{
+			const std::string who = std::string( "  " ) + sheet + ", " + kChannelName[ c ] + fmt( " (n %.4f)", b.n[ c ] );
+			Check( b.found[ c ] && std::fabs( b.nullRow[ c ] - b.predictedRow[ c ] ) <= kRowTol,
+			       who + fmt( ": the p ghost's null is at row %.3f, Brewster's angle puts it at %.3f (tolerance %.1f px)", b.nullRow[ c ], b.predictedRow[ c ], kRowTol ) );
+			Check( b.found[ c ] && b.ratio[ c ] <= kRatioTol && 3.0 * b.ratioBound[ c ] <= kRatioTol,
+			       who + fmt( ": there p/s is %.2g -- p vanishes, s does not (tolerance %.0e, the subsample spread bounds it at %.1g)", b.ratio[ c ], kRatioTol, b.ratioBound[ c ] ) );
+		}
 		if( brewsterOnly )
 			continue;
 		const AbelesResult a = abeles( W, H, fault, k );
 		const double tol     = kAbelesTol;
 		Check( a.residual <= tol && 3.0 * ( a.modelResidual + a.floatBound ) <= tol,
-		       std::string( "  " ) + sheet + fmt( ": at 45 degrees R_p = R_s^2 (R_s %.5f, R_p %.6f, residual %.1g, tolerance %.0e)", a.Rs, a.Rp, a.residual, tol ) );
+		       std::string( "  " ) + sheet + fmt( ": at 45 degrees R_p = R_s^2 in every channel (green's R_s %.5f, R_p %.6f; worst residual %.1g, tolerance %.0e)", a.Rs, a.Rp, a.residual, tol ) );
 	}
 	if( brewsterOnly )
 		return;
@@ -832,6 +888,67 @@ void fresnelCheck( int W, int H, int fault, bool brewsterOnly )
 	Check( rows > H / 4 && wrong == 0, fmt( "  s rises monotonically with incidence down the centre column (%.0f rows, %.0f out of order)", rows, wrong ) );
 }
 
+/// Polarisation at 45 and 135 degrees: each pixel's ghost against the field
+/// at that angle in the picture (the pane's picture x along world x, y along
+/// world z), made transverse; and the two are mirror images, column for
+/// column, as the rig is.
+void angledCheck( int W, int H, int fault )
+{
+	MixRig rig;
+	if( !rig.Init( W, H, true, fault ) )
+		return;
+	physics( rig );
+	rig.Set( "Sheet", static_cast< float >( SheetKind::PetFoil ) );
+	rig.UploadDest( flatField( W, H, kBlack ) );
+	rig.UploadSrc( flatField( W, H, kWhite ) );
+	const Asked a = asked( rig.plugin );
+	const World w = worldFor( a, W, H, static_cast< double >( W ) / H );
+	ImageF img[ 2 ];
+	for( int k = 0; k < 2; ++k )
+	{
+		const Polarisation pol = k == 0 ? Polarisation::Deg45 : Polarisation::Deg135;
+		rig.Set( "Polarisation", static_cast< float >( pol ) );
+		rig.Render();
+		img[ k ]         = rig.PixelsF();
+		const double chi = ( k == 0 ? 45.0 : 135.0 ) * kDegree;
+		const Vec3 E     = { std::cos( chi ), 0.0, std::sin( chi ) };
+		double worst     = 0.0;
+		long n           = 0;
+		for( int y = 0; y < H; ++y )
+			for( int x = 0; x < W; ++x )
+			{
+				if( !pixelOnScreen( w, x, y, 0.002 ) )
+					continue;
+				++n;
+				for( int c = 0; c < 3; ++c )
+				{
+					bool on = false;
+					worst   = std::max( worst, std::fabs( channel( img[ k ], W, x, y, c ) - predictedPolarisedR( w, a.eta[ c ], E, x, y, on ) ) );
+				}
+			}
+		Check( n > 1000 && worst <= kLightTol,
+		       fmt( "  polarised at %.0f degrees: the ghost is R for the field at that angle in the picture, at every pixel (%.0f pixels, worst %.2g", k == 0 ? 45.0 : 135.0, n, worst )
+		           + fmt( ", tolerance %.0e)", kLightTol ) );
+	}
+	//The rotated subsample grid is not its own mirror image, but it agrees
+	//with it to second order in the spread: the mirror holds well inside the
+	//tolerance, while either angle alone is lopsided.
+	double worstMirror = 0.0, lopsided = 0.0;
+	for( int y = 0; y < H; ++y )
+		for( int x = 0; x < W / 2; ++x )
+		{
+			if( !pixelOnScreen( w, x, y, 0.002 ) || !pixelOnScreen( w, W - 1 - x, y, 0.002 ) )
+				continue;
+			for( int c = 0; c < 3; ++c )
+			{
+				worstMirror = std::max( worstMirror, std::fabs( channel( img[ 0 ], W, x, y, c ) - channel( img[ 1 ], W, W - 1 - x, y, c ) ) );
+				lopsided    = std::max( lopsided, std::fabs( channel( img[ 0 ], W, x, y, c ) - channel( img[ 0 ], W, W - 1 - x, y, c ) ) );
+			}
+		}
+	Check( worstMirror <= kLightTol && lopsided > 100.0 * kLightTol,
+	       fmt( "  and 135 degrees is 45 degrees' mirror image (worst %.2g, tolerance %.0e), though 45 alone is lopsided by up to %.3f", worstMirror, kLightTol, lopsided ) );
+}
+
 int runFresnel()
 {
 	std::printf( "Fresnel, out of the picture: Brewster's null for p, and Abeles' R_p = R_s^2 at 45 degrees\n" );
@@ -839,10 +956,15 @@ int runFresnel()
 	{
 		std::printf( "\n  %dx%d\n", r[ 0 ], r[ 1 ] );
 		fresnelCheck( r[ 0 ], r[ 1 ], kFaultNone, false );
+		angledCheck( r[ 0 ], r[ 1 ], kFaultNone );
+		const int clockwise = failuresOf( [ & ] { angledCheck( r[ 0 ], r[ 1 ], kFaultClockwise ); } );
 		const int cosSwap = failuresOf( [ & ] { fresnelCheck( r[ 0 ], r[ 1 ], kFaultRpCosSwap, true ); } );
 		const int swapSP  = failuresOf( [ & ] { fresnelCheck( r[ 0 ], r[ 1 ], kFaultSwapSP, true ); } );
+		const int one     = failuresOf( [ & ] { fresnelCheck( r[ 0 ], r[ 1 ], kFaultOneIndex, true ); } );
 		Negative( cosSwap > 0, fmt( "r_p with cos(i) and cos(t) swapped (no null) fails %.0f assertion(s)", cosSwap ) );
 		Negative( swapSP > 0, fmt( "s and p swapped fails %.0f assertion(s)", swapSP ) );
+		Negative( one > 0, fmt( "one index for every channel (no dispersion) fails %.0f assertion(s)", one ) );
+		Negative( clockwise > 0, fmt( "the polarisation angle taken clockwise fails %.0f assertion(s)", clockwise ) );
 	}
 	return failures == 0 ? 0 : 1;
 }
@@ -924,7 +1046,7 @@ void doubleCheck( int W, int H, int fault, const char* fragment = nullptr )
 		for( const auto& q : kSub )
 		{
 			double v = 0.0;
-			imageLanding( w, rayAt( w, px + 0.5 + q[ 0 ], py + 0.5 + q[ 1 ] ), a.eta, t, k, 1.0, v );
+			imageLanding( w, rayAt( w, px + 0.5 + q[ 0 ], py + 0.5 + q[ 1 ] ), a.etaRay, t, k, 1.0, v );
 			lo[ k ] = std::min( lo[ k ], v );
 			hi[ k ] = std::max( hi[ k ], v );
 		}
@@ -953,12 +1075,14 @@ void doubleCheck( int W, int H, int fault, const char* fragment = nullptr )
 	}
 	Check( resolvable, "  the images are two Src texels or more apart at the measured pixel, so each can be cut out alone" );
 
-	const PaneHit h  = paneRay( w, rayAt( w, px + 0.5, py + 0.5 ) );
-	const Fresnel fz = fresnelAt( h.cosi, a.eta );
+	const PaneHit h = paneRay( w, rayAt( w, px + 0.5, py + 0.5 ) );
 	double worst1 = 0.0, worst2 = 0.0, worstSum = 0.0;
 	for( int c = 0; c < 3; ++c )
 	{
-		const double tp = std::pow( a.tint[ c ], 1.0 / fz.cosT );
+		//Each channel crosses at its own refracted angle (the rays, and so
+		//the images' places, bend by green's).
+		const Fresnel fz = fresnelAt( h.cosi, a.eta[ c ] );
+		const double tp  = std::pow( a.tint[ c ], 1.0 / fz.cosT );
 		const double W0 = P[ 0 ][ c ], W1 = P[ 1 ][ c ] - P[ 0 ][ c ], W2 = P[ 2 ][ c ] - P[ 1 ][ c ];
 		const double w1 = ( 1.0 - W0 ) * ( 1.0 - W0 ) * W0 * tp * tp;
 		const double w2 = ( 1.0 - W0 ) * ( 1.0 - W0 ) * W0 * W0 * W0 * tp * tp * tp * tp;
@@ -981,11 +1105,11 @@ void doubleCheck( int W, int H, int fault, const char* fragment = nullptr )
 	std::vector< double > prof( H );
 	for( int y = 0; y < H; ++y )
 		prof[ y ] = channel( img, W, px, y, 0 );
-	for( int k = 0; k < 2; ++k )
-	{
-		//The row whose centre ray puts image k on the edge: bracketed between
-		//two pixel centres, then bisected.
-		auto landingAt = [ & ]( double y, double& v ) { return imageLanding( w, rayAt( w, px + 0.5, y ), a.eta, t, k, 1.0, v ); };
+	//The row whose centre ray puts image k on the edge, for rays bent by
+	//index eta: bracketed between two pixel centres, then bisected. -1 when
+	//the edge is not in the frame.
+	auto edgeRow = [ & ]( int k, double eta ) {
+		auto landingAt = [ & ]( double y, double& v ) { return imageLanding( w, rayAt( w, px + 0.5, y ), eta, t, k, 1.0, v ); };
 		double y0 = -1.0, y1 = -1.0;
 		for( int j = 0; j + 1 < H && y0 < 0.0; ++j )
 		{
@@ -997,10 +1121,7 @@ void doubleCheck( int W, int H, int fault, const char* fragment = nullptr )
 			}
 		}
 		if( y0 < 0.0 )
-		{
-			Check( false, fmt( "  image %.0f's edge is in the frame", k ) );
-			continue;
-		}
+			return -1.0;
 		double v0 = 0.0;
 		landingAt( y0, v0 );
 		const bool below = v0 < 0.5;
@@ -1011,7 +1132,21 @@ void doubleCheck( int W, int H, int fault, const char* fragment = nullptr )
 			landingAt( ym, vm );
 			( ( vm < 0.5 ) == below ? y0 : y1 ) = ym;
 		}
-		const double want = 0.5 * ( y0 + y1 );
+		return 0.5 * ( y0 + y1 );
+	};
+	for( int k = 0; k < 2; ++k )
+	{
+		const double want = edgeRow( k, a.etaRay );
+		if( want < 0.0 )
+		{
+			Check( false, fmt( "  image %.0f's edge is in the frame", k ) );
+			continue;
+		}
+		//What tracing each channel's rays would add: the back image's red and
+		//blue edges apart. For the record (AGENTS.md, "Dispersion").
+		if( k > 0 && !quiet )
+			std::printf( "  note  image %d's red and blue edges would land %.2f px apart if each channel bent its own rays\n", k,
+			             std::fabs( edgeRow( k, a.eta[ 0 ] ) - edgeRow( k, a.eta[ 2 ] ) ) );
 		//The half-level crossing between the levels two pixels either side.
 		const int jb = static_cast< int >( std::floor( want - 2.0 ) ), ja = static_cast< int >( std::floor( want + 2.0 ) );
 		double got   = -1.0;
@@ -1047,11 +1182,638 @@ int runDouble()
 }
 
 //---------------------------------------------------------------------------
+// --coating
+//---------------------------------------------------------------------------
+/// One channel of a coated pane at one incidence: the film's s and p
+/// reflectance and transmittance, the coat on the side the pane's normal
+/// points to (the audience's). `tabulated` lerps the coat's numbers between
+/// the two nearest of the plugin's table entries, for the bound on what its
+/// table costs. A thick pane's reflection, image by image: the front
+/// surface's, then the back's three, the last carrying the series' rest.
+struct CoatedFilm
+{
+	double Rs = 0.0, Rp = 0.0, Ts = 0.0, Tp = 0.0;
+	double imageS[ 4 ] = {}, imageP[ 4 ] = {};
+};
+
+CoatedFilm coatedFilm( const Asked& a, int c, double cosi, bool coatFirst, bool tabulated = false )
+{
+	double n = 1.0, k = 0.0;
+	CoatIndex( static_cast< CoatingKind >( a.coating ), c, n, k );
+	const Fresnel b  = fresnelAt( cosi, a.eta[ c ] );
+	const double tau = std::pow( a.tint[ c ], 1.0 / b.cosT );
+	Coat co          = coatAt( cosi, n, k, a.coatNm, a.eta[ c ], kChannelNm[ c ] );
+	if( tabulated )
+	{
+		const double x = std::clamp( cosi, 0.0, 1.0 ) * ( coat::kSize - 1 );
+		const int i    = std::min( static_cast< int >( std::floor( x ) ), coat::kSize - 2 );
+		const double f = x - i;
+		const Coat lo  = coatAt( static_cast< double >( i ) / ( coat::kSize - 1 ), n, k, a.coatNm, a.eta[ c ], kChannelNm[ c ] );
+		const Coat hi  = coatAt( static_cast< double >( i + 1 ) / ( coat::kSize - 1 ), n, k, a.coatNm, a.eta[ c ], kChannelNm[ c ] );
+		auto lerp      = [ & ]( double Coat::* m ) { co.*m = lo.*m + f * ( hi.*m - lo.*m ); };
+		for( auto m : { &Coat::Rs, &Coat::Rp, &Coat::Ris, &Coat::Rip, &Coat::Ts, &Coat::Tp, &Coat::Tis, &Coat::Tip } )
+			lerp( m );
+	}
+	//Met coat first, the coat is F; met from behind, it is B, from inside,
+	//and the light leaves through it into the air.
+	const Faces s = coatFirst ? Faces { co.Rs, co.Ris, co.Ts, b.Rs, 1.0 - b.Rs } : Faces { b.Rs, b.Rs, 1.0 - b.Rs, co.Ris, co.Tis };
+	const Faces p = coatFirst ? Faces { co.Rp, co.Rip, co.Tp, b.Rp, 1.0 - b.Rp } : Faces { b.Rp, b.Rp, 1.0 - b.Rp, co.Rip, co.Tip };
+	CoatedFilm out { slabR( s, tau ), slabR( p, tau ), slabT( s, tau ), slabT( p, tau ) };
+	auto images = [ & ]( const Faces& f, double* img ) {
+		const double echo = f.RFi * f.RBi * tau * tau;
+		img[ 0 ]          = f.RF;
+		img[ 1 ]          = f.TF * f.TF * f.RBi * tau * tau;
+		img[ 2 ]          = img[ 1 ] * echo;
+		img[ 3 ]          = img[ 2 ] * echo / ( 1.0 - echo );
+	};
+	images( s, out.imageS );
+	images( p, out.imageP );
+	return out;
+}
+
+/// What a coated pane shows at a pixel.
+enum class Seen
+{
+	Ghost,///< a white screen's reflection, Dest black, under the source field E (zero: unpolarised)
+	Stage,///< the stage's transmittance
+	Spill,///< the reflectance of the spill (per unit Spill), Src black
+};
+
+/// The mean of a pixel's four subsamples, per channel; false where one does
+/// not fit the measurement: a ghost needs every reflection on the screen, the
+/// spill every reflection clear of it. A thick pane's images are followed as
+/// the renderer states it follows rays: only while one could still deliver
+/// more than the prune weight, in its brightest channel and polarisation.
+bool coatedPixel( const World& w, const Asked& a, Seen what, Vec3 E, int x, int y, double value[ 3 ], bool tabulated = false )
+{
+	//A thick pane's later images land up to 3 x 2 t tan(theta_t) < 6 t
+	//further along: inside the screen too, by this margin.
+	const double kMargin = 0.002 + 8.0 * a.thickness;
+	double sum[ 3 ]      = { 0.0, 0.0, 0.0 };
+	for( const auto& q : kSub )
+	{
+		const Vec3 d    = rayAt( w, x + 0.5 + q[ 0 ], y + 0.5 + q[ 1 ] );
+		const PaneHit h = paneRay( w, d );
+		if( !h.sheet )
+		{
+			if( what != Seen::Stage )
+				return false;
+			for( double& v : sum )
+				v += 1.0;
+			continue;
+		}
+		const Vec3 n = w.sheets[ 0 ].normal;
+		CoatedFilm f[ 3 ];
+		for( int c = 0; c < 3; ++c )
+			f[ c ] = coatedFilm( a, c, h.cosi, rig::dot( d, n ) < 0.0, tabulated );
+		if( what == Seen::Stage )
+		{
+			for( int c = 0; c < 3; ++c )
+				sum[ c ] += 0.5 * ( f[ c ].Ts + f[ c ].Tp );
+			continue;
+		}
+		if( what == Seen::Spill )
+		{
+			const bool clear = !h.reaches || h.u < -kMargin || h.u > 1.0 + kMargin || h.v < -kMargin || h.v > 1.0 + kMargin;
+			if( !clear )
+				return false;
+		}
+		else if( !h.onScreen || h.u < kMargin || h.u > 1.0 - kMargin || h.v < kMargin || h.v > 1.0 - kMargin )
+			return false;
+		double fs = 0.5;
+		if( what == Seen::Ghost && rig::dot( E, E ) > 0.0 )
+		{
+			const Vec3 nf = rig::dot( d, n ) > 0.0 ? n * -1.0 : n;
+			const Vec3 s  = rig::normalize( rig::cross( d, nf ) );
+			const Vec3 e  = E - h.reflected * rig::dot( E, h.reflected );
+			fs            = rig::dot( e, s ) * rig::dot( e, s ) / rig::dot( e, e );
+		}
+		if( a.thickness <= 0.0 )
+		{
+			for( int c = 0; c < 3; ++c )
+				sum[ c ] += fs * f[ c ].Rs + ( 1.0 - fs ) * f[ c ].Rp;
+			continue;
+		}
+		for( int k = 0; k < 4; ++k )
+		{
+			double reach = 0.0;
+			for( int c = 0; c < 3; ++c )
+				reach = std::max( { reach, f[ c ].imageS[ k ], f[ c ].imageP[ k ] } );
+			//Within float roundoff of the line, the renderer may decide either
+			//way: no prediction.
+			if( std::fabs( reach / a.prune - 1.0 ) < 1e-4 )
+				return false;
+			if( reach > a.prune )
+				for( int c = 0; c < 3; ++c )
+					sum[ c ] += fs * f[ c ].imageS[ k ] + ( 1.0 - fs ) * f[ c ].imageP[ k ];
+		}
+	}
+	for( int c = 0; c < 3; ++c )
+		value[ c ] = 0.25 * sum[ c ];
+	return true;
+}
+
+/// The harness's coat against closed forms, and the plugin's CPU Airy sum
+/// against the harness's transfer matrix. No GPU.
+void coatModelCheck()
+{
+	double worstBare = 0.0, worstLossless = 0.0, worstRecip = 0.0, worstAiry = 0.0;
+	const double cosines[] = { 1.0, 0.9, 0.7071067811865476, 0.5, 0.2, 0.05 };
+	for( int sk = 0; sk < static_cast< int >( SheetKind::Count ); ++sk )
+		for( int c = 0; c < 3; ++c )
+		{
+			const double ns = ChannelIndex( static_cast< SheetKind >( sk ), c );
+			for( double ci : cosines )
+			{
+				//No layer at all is the bare surface, from either side.
+				const Fresnel b = fresnelAt( ci, ns );
+				const Coat z    = coatAt( ci, 2.0, 0.5, 0.0, ns, kChannelNm[ c ] );
+				worstBare       = std::max( { worstBare, std::fabs( z.Rs - b.Rs ), std::fabs( z.Rp - b.Rp ), std::fabs( z.Ris - b.Rs ), std::fabs( z.Rip - b.Rp ),
+				                              std::fabs( z.Ts - ( 1.0 - b.Rs ) ), std::fabs( z.Tp - ( 1.0 - b.Rp ) ) } );
+				for( int kind = 1; kind < static_cast< int >( CoatingKind::Count ); ++kind )
+				{
+					double n, k;
+					CoatIndex( static_cast< CoatingKind >( kind ), c, n, k );
+					for( double param : { 0.25, 0.5, 1.0 } )
+					{
+						const double d = CoatThicknessNm( static_cast< CoatingKind >( kind ), static_cast< float >( param ) );
+						const Coat co  = coatAt( ci, n, k, d, ns, kChannelNm[ c ] );
+						//Reciprocity: the transmittance is the same both ways.
+						worstRecip = std::max( { worstRecip, std::fabs( co.Ts - co.Tis ), std::fabs( co.Tp - co.Tip ) } );
+						if( kind == static_cast< int >( CoatingKind::TitaniumDioxide ) )
+							worstLossless = std::max( { worstLossless, std::fabs( co.Rs + co.Ts - 1.0 ), std::fabs( co.Rp + co.Tp - 1.0 ),
+							                            std::fabs( co.Ris - co.Rs ), std::fabs( co.Rip - co.Rp ) } );
+						const coat::Surface s = coat::At( ci, coat::Complex( n, k ), d, ns, kChannelNm[ c ] );
+						worstAiry             = std::max( { worstAiry, std::fabs( s.Rs - co.Rs ), std::fabs( s.Rp - co.Rp ), std::fabs( s.Ris - co.Ris ),
+						                                    std::fabs( s.Rip - co.Rip ), std::fabs( s.Ts - co.Ts ), std::fabs( s.Tp - co.Tp ) } );
+					}
+				}
+			}
+		}
+	Check( worstBare <= 1e-12, fmt( "  a layer of no thickness is the bare surface, s and p, from either side (worst %.1g)", worstBare ) );
+	Check( worstRecip <= 1e-12, fmt( "  either coat transmits the same both ways, as reciprocity requires (worst %.1g)", worstRecip ) );
+	//TiO2's k, 5.4e-6 at most (blue, toward its UV edge), absorbs under 1e-4
+	//of the light through 112 nm.
+	Check( worstLossless <= 1e-4, fmt( "  titanium dioxide, all but clear: R + T = 1 and R is the same from either side, to its absorption (worst %.1g, bound 1e-4)", worstLossless ) );
+
+	//Face on, a quarter wave is ((n_s - n_1^2) / (n_s + n_1^2))^2; a half wave
+	//is absent.
+	{
+		double n, k;
+		CoatIndex( CoatingKind::TitaniumDioxide, kRayChannel, n, k );
+		const double ns  = ChannelIndex( SheetKind::FloatGlass, kRayChannel );
+		const double lam = kChannelNm[ kRayChannel ];
+		const Coat q     = coatAt( 1.0, n, 0.0, lam / ( 4.0 * n ), ns, lam );
+		const Coat hw    = coatAt( 1.0, n, 0.0, lam / ( 2.0 * n ), ns, lam );
+		const double qw = std::pow( ( ns - n * n ) / ( ns + n * n ), 2.0 ), bare = std::pow( ( ns - 1.0 ) / ( ns + 1.0 ), 2.0 );
+		Check( std::fabs( q.Rs - qw ) <= 1e-12 && std::fabs( q.Rp - qw ) <= 1e-12,
+		       fmt( "  face on, a quarter wave of titanium dioxide on float glass reflects ((n_s - n^2)/(n_s + n^2))^2 = %.5f (got %.5f)", qw, q.Rs ) );
+		Check( std::fabs( hw.Rs - bare ) <= 1e-12, fmt( "  and a half wave is absent: the bare glass's %.5f (got %.5f)", bare, hw.Rs ) );
+		Check( std::fabs( CoatThicknessNm( CoatingKind::TitaniumDioxide, 0.5f ) * 4.0 * n / lam - 1.0 ) <= 1e-6,
+		       fmt( "  Coat Thickness 0.5 of titanium dioxide is that quarter wave, %.1f nm", lam / ( 4.0 * n ) ) );
+	}
+	//Thick, aluminium is the bulk metal: |(1 - N) / (1 + N)|^2 face on.
+	{
+		double n, k;
+		CoatIndex( CoatingKind::Aluminium, kRayChannel, n, k );
+		const Coat thick  = coatAt( 1.0, n, k, 200.0, 1.5, kChannelNm[ kRayChannel ] );
+		const double bulk = std::norm( ( 1.0 - std::complex< double >( n, -k ) ) / ( 1.0 + std::complex< double >( n, -k ) ) );
+		const Coat thin   = coatAt( 1.0, n, k, 5.0, 1.5, kChannelNm[ kRayChannel ] );
+		Check( std::fabs( thick.Rs - bulk ) <= 1e-9 && thick.Ts < 1e-9,
+		       fmt( "  200 nm of aluminium is the bulk metal, R = |(1 - N)/(1 + N)|^2 = %.4f, and opaque (got %.4f)", bulk, thick.Rs ) );
+		Check( thin.Rs + thin.Ts < 0.9 && thin.Rs - thin.Ris > 0.02,
+		       fmt( "  5 nm of it absorbs (R %.3f + T %.3f) and reflects more from the air than from the glass (%.3f)", thin.Rs, thin.Ts, thin.Ris ) );
+		bool metal = true, clear = true;
+		for( int c = 0; c < 3; ++c )
+		{
+			double an, ak, tn, tk;
+			CoatIndex( CoatingKind::Aluminium, c, an, ak );
+			CoatIndex( CoatingKind::TitaniumDioxide, c, tn, tk );
+			metal = metal && ak > 4.0 * an;
+			clear = clear && tk < 1e-5 && tn > 2.3 && tn < 2.8;
+		}
+		Check( metal && clear, "  the tabulated indices are a metal's (k > 4 n) and a clear high-index dielectric's (n 2.3 to 2.8, k < 1e-5)" );
+	}
+	Check( worstAiry <= 1e-12, fmt( "  the plugin's Airy sum (Coating.cpp) agrees with this transfer matrix, every sheet, coat, channel and angle (worst %.1g)", worstAiry ) );
+
+	//The amplitudes, carried into Born & Wolf's convention: they give the
+	//power the matrix gives, the bare surface's signs with no layer, the
+	//same t both ways, and the plugin's s-p cross terms -- which carry the
+	//phase a polarised source needs through more than one interaction.
+	double worstPower = 0.0, worstBareAmp = 0.0, worstRecipAmp = 0.0, worstCross = 0.0;
+	for( int sk = 0; sk < static_cast< int >( SheetKind::Count ); ++sk )
+		for( int c = 0; c < 3; ++c )
+		{
+			const double ns = ChannelIndex( static_cast< SheetKind >( sk ), c );
+			for( double ci : cosines )
+			{
+				const Amp z = coatAmp( ci, 2.0, 0.5, 0.0, ns, kChannelNm[ c ] ), b = bareAmp( ci, ns );
+				worstBareAmp = std::max( { worstBareAmp, std::abs( z.rs - b.rs ), std::abs( z.rp - b.rp ), std::abs( z.ris - b.ris ), std::abs( z.rip - b.rip ),
+				                           std::abs( z.ts - b.ts ), std::abs( z.tp - b.tp ) } );
+				for( int kind = 1; kind < static_cast< int >( CoatingKind::Count ); ++kind )
+				{
+					double n, k;
+					CoatIndex( static_cast< CoatingKind >( kind ), c, n, k );
+					for( double param : { 0.25, 0.5, 1.0 } )
+					{
+						const double d        = CoatThicknessNm( static_cast< CoatingKind >( kind ), static_cast< float >( param ) );
+						const Amp am          = coatAmp( ci, n, k, d, ns, kChannelNm[ c ] );
+						const Coat co         = coatAt( ci, n, k, d, ns, kChannelNm[ c ] );
+						const coat::Surface s = coat::At( ci, coat::Complex( n, k ), d, ns, kChannelNm[ c ] );
+						worstPower    = std::max( { worstPower, std::fabs( std::norm( am.rs ) - co.Rs ), std::fabs( std::norm( am.rip ) - co.Rip ), std::fabs( std::norm( am.ts ) - co.Ts ),
+						                            std::fabs( std::norm( am.tp ) - co.Tp ) } );
+						worstRecipAmp = std::max( { worstRecipAmp, std::abs( am.ts - am.tis ), std::abs( am.tp - am.tip ) } );
+						worstCross    = std::max( { worstCross, std::abs( std::conj( am.rs ) * am.rp - s.c ), std::abs( std::conj( am.ris ) * am.rip - s.ci ),
+						                            std::abs( std::conj( am.ts ) * am.tp - s.g ) } );
+					}
+				}
+			}
+		}
+	Check( worstPower <= 1e-12 && worstBareAmp <= 1e-12 && worstRecipAmp <= 1e-12,
+	       fmt( "  carried into Born & Wolf's convention, the amplitudes give the matrix's powers, the bare surface's signs, and one t both ways (worst %.1g)", std::max( { worstPower, worstBareAmp, worstRecipAmp } ) ) );
+	Check( worstCross <= 1e-12, fmt( "  and the plugin's s-p cross terms, conj( x_s ) x_p, reflected either way and transmitted (worst %.1g)", worstCross ) );
+}
+
+struct CoatCase
+{
+	SheetKind sheet;
+	CoatingKind coating;
+	float thickness;     ///< Coat Thickness, 0..1
+	float sheetThickness;///< Thickness, 0..1: a thick pane's images sum to the film's R
+};
+
+/// The coated pane, rendered from the audience (the coat's side) and from
+/// behind, against coatedPixel: the ghost unpolarised and under both
+/// polarisations, the stage's transmittance, and from behind the spill's
+/// reflection, which meets the coat from inside the sheet.
+void coatingCheck( int W, int H, int fault, const std::vector< CoatCase >& cases, bool frontOnly, bool backOnly )
+{
+	MixRig rig;
+	if( !rig.Init( W, H, true, fault ) )
+		return;
+	//Every pixel is predicted in double through a transfer matrix; a grid of
+	//160 x 90 of them covers the pane.
+	const int step = std::max( 1, W / 160 );
+	for( const CoatCase& cc : cases )
+	{
+		physics( rig );
+		rig.Set( "Sheet", static_cast< float >( cc.sheet ) );
+		rig.Set( "Coating", static_cast< float >( cc.coating ) );
+		rig.Set( "Coat Thickness", cc.thickness );
+		rig.Set( "Thickness", cc.sheetThickness );
+		const Asked a       = asked( rig.plugin );
+		const World front   = worldFor( a, W, H, static_cast< double >( W ) / H );
+		const std::string who = std::string( "  " ) + NameOf( cc.coating ) + fmt( " %.1f nm on ", a.coatNm ) + NameOf( cc.sheet )
+		                        + ( a.thickness > 0.0 ? fmt( ", %.0f%% thick", 100.0 * a.thickness ) : std::string() );
+		const bool lossless   = cc.coating == CoatingKind::TitaniumDioxide;
+		double worstLerp      = 0.0;
+
+		auto measure = [ & ]( const World& w, Seen what, Vec3 E, const ImageF& img, double scale, double& worst, long& n, std::vector< double >* keep ) {
+			worst = 0.0;
+			n     = 0;
+			if( keep )
+				keep->assign( static_cast< size_t >( W ) * H * 3, -1.0 );
+			for( int y = 0; y < H; y += step )
+				for( int x = 0; x < W; x += step )
+				{
+					double want[ 3 ], tab[ 3 ];
+					if( !coatedPixel( w, a, what, E, x, y, want ) )
+						continue;
+					coatedPixel( w, a, what, E, x, y, tab, true );
+					for( int c = 0; c < 3; ++c )
+					{
+						worstLerp        = std::max( worstLerp, scale * std::fabs( tab[ c ] - want[ c ] ) );
+						const double got = channel( img, W, x, y, c );
+						worst            = std::max( worst, std::fabs( got - scale * want[ c ] ) );
+						if( keep )
+							( *keep )[ ( static_cast< size_t >( y ) * W + x ) * 3 + c ] = got;
+						++n;
+					}
+				}
+		};
+
+		if( !backOnly )
+		{
+			rig.UploadDest( flatField( W, H, kBlack ) );
+			rig.UploadSrc( flatField( W, H, kWhite ) );
+			double worstGhost = 0.0;
+			long nGhost       = 0;
+			std::vector< double > R, T;
+			static const char* const kPol[ 3 ] = { "unpolarised", "Horizontal", "Vertical" };
+			const Vec3 fields[ 3 ]             = { { 0, 0, 0 }, { 1, 0, 0 }, { 0, 0, 1 } };
+			std::string worstPol;
+			for( int pol = 0; pol < 3; ++pol )
+			{
+				rig.Set( "Polarisation", static_cast< float >( pol ) );
+				rig.Render();
+				double worst;
+				long n;
+				measure( front, Seen::Ghost, fields[ pol ], rig.PixelsF(), 1.0, worst, n, pol == 0 ? &R : nullptr );
+				nGhost += n;
+				if( worst >= worstGhost )
+				{
+					worstGhost = worst;
+					worstPol   = kPol[ pol ];
+				}
+			}
+			rig.Set( "Polarisation", 0.0f );
+			Check( nGhost > 1000 && worstGhost <= kLightTol,
+			       who + fmt( ", from the audience: the ghost, unpolarised and polarised both ways, is the coated film's R (%.0f samples, worst %.2g ", nGhost, worstGhost ) + worstPol
+			           + fmt( ", tolerance %.0e)", kLightTol ) );
+
+			rig.UploadDest( flatField( W, H, kWhite ) );
+			rig.UploadSrc( flatField( W, H, kBlack ) );
+			rig.Render();
+			double worstT;
+			long nT;
+			measure( front, Seen::Stage, {}, rig.PixelsF(), 1.0, worstT, nT, &T );
+			Check( nT > 1000 && worstT <= kLightTol, who + fmt( ": the stage through it is the coated film's T (%.0f samples, worst %.2g, tolerance %.0e)", nT, worstT, kLightTol ) );
+
+			//R + T where both were measured: short of 1 by the model's
+			//absorption -- a metal's, or titanium dioxide's next to nothing.
+			double worstSum = 0.0, leastA = 1.0, mostA = 0.0;
+			long nSum       = 0;
+			for( size_t i = 0; i < R.size(); ++i )
+				if( R[ i ] >= 0.0 && T[ i ] >= 0.0 )
+				{
+					const int c = static_cast< int >( i % 3 ), x = static_cast< int >( ( i / 3 ) % W ), y = static_cast< int >( i / 3 / W );
+					double r[ 3 ], t[ 3 ];
+					coatedPixel( front, a, Seen::Ghost, {}, x, y, r );
+					coatedPixel( front, a, Seen::Stage, {}, x, y, t );
+					const double A = 1.0 - R[ i ] - T[ i ];
+					worstSum       = std::max( worstSum, std::fabs( A - ( 1.0 - r[ c ] - t[ c ] ) ) );
+					leastA         = std::min( leastA, A );
+					mostA          = std::max( mostA, A );
+					++nSum;
+				}
+			if( lossless )
+				Check( nSum > 1000 && worstSum <= 2.0 * kLightTol && mostA < kLightTol,
+				       who + fmt( ": all but clear, R + T = 1 (it absorbs %.1g at most, as the model has it; %.0f samples, worst %.2g, tolerance %.0e)", std::max( mostA, 0.0 ), nSum, worstSum, 2.0 * kLightTol ) );
+			else
+				Check( nSum > 1000 && worstSum <= 2.0 * kLightTol && leastA > 0.02,
+				       who + fmt( ": a metal, it absorbs %.3f to %.3f, as the model has it", leastA, mostA ) + fmt( " (%.0f samples, worst %.2g, tolerance %.0e)", nSum, worstSum, 2.0 * kLightTol ) );
+		}
+
+		if( !frontOnly )
+		{
+			rig.Set( "Azimuth", ParamForAzimuth( kPi ) );
+			rig.Set( "Spill", ParamForSpill( kSpillMax ) );
+			const Asked b      = asked( rig.plugin );
+			const World behind = worldFor( b, W, H, static_cast< double >( W ) / H );
+			rig.UploadDest( flatField( W, H, kBlack ) );
+			rig.UploadSrc( flatField( W, H, kBlack ) );
+			rig.Render();
+			double worstR;
+			long nR;
+			measure( behind, Seen::Spill, {}, rig.PixelsF(), b.spill, worstR, nR, nullptr );
+			//How much the inside view differs from the outside's, at the
+			//centre of the frame: what the symmetric-coat control removes.
+			const PaneHit h  = paneRay( behind, rayAt( behind, 0.5 * W, 0.5 * H ) );
+			const CoatedFilm in = coatedFilm( b, kRayChannel, h.cosi, false ), out = coatedFilm( b, kRayChannel, h.cosi, true );
+			Check( nR > 1000 && worstR <= kLightTol,
+			       who + fmt( ", from behind: the spill's reflection, which meets the coat from inside, is the film's R that way (%.0f samples, worst %.2g, tolerance %.0e;", nR, worstR, kLightTol )
+			           + fmt( " at the centre %.4f, %.4f from the front)", 0.5 * ( in.Rs + in.Rp ), 0.5 * ( out.Rs + out.Rp ) ) );
+			rig.Set( "Spill", 0.0f );
+			rig.UploadDest( flatField( W, H, kWhite ) );
+			rig.Render();
+			double worstT;
+			long nT;
+			measure( behind, Seen::Stage, {}, rig.PixelsF(), 1.0, worstT, nT, nullptr );
+			Check( nT > 1000 && worstT <= kLightTol, who + fmt( ": and the stage through it is the same T as from the front (%.0f samples, worst %.2g, tolerance %.0e)", nT, worstT, kLightTol ) );
+			rig.Set( "Azimuth", ParamForAzimuth( 0.0 ) );
+		}
+		Check( 3.0 * worstLerp <= kLightTol, who + fmt( ": the plugin's table, lerped, is within %.1g of the exact coat, a third of the tolerance or less", worstLerp ) );
+	}
+}
+
+const std::vector< CoatCase > kCoatCases = {
+	{ SheetKind::FloatGlass, CoatingKind::Aluminium, 0.5f, 0.0f },
+	{ SheetKind::FloatGlass, CoatingKind::Aluminium, 1.0f, 0.0f },
+	{ SheetKind::FloatGlass, CoatingKind::TitaniumDioxide, 0.5f, 0.0f },
+	{ SheetKind::FloatGlass, CoatingKind::TitaniumDioxide, 0.75f, 0.0f },
+	{ SheetKind::PetFoil, CoatingKind::Aluminium, 0.5f, 0.0f },
+	{ SheetKind::PetFoil, CoatingKind::TitaniumDioxide, 0.5f, 0.0f },
+	{ SheetKind::FloatGlass, CoatingKind::Aluminium, 0.5f, 0.25f },
+};
+
+int runCoating()
+{
+	std::printf( "a coated sheet: a metal or a clear high-index layer, thin enough to interfere, on the audience's side\n\n" );
+	std::printf( "  the model\n" );
+	coatModelCheck();
+	for( const auto& r : kRasters )
+	{
+		std::printf( "\n  %dx%d\n", r[ 0 ], r[ 1 ] );
+		coatingCheck( r[ 0 ], r[ 1 ], kFaultNone, kCoatCases, false, false );
+		const std::vector< CoatCase > metal = { { SheetKind::FloatGlass, CoatingKind::Aluminium, 0.5f, 0.0f } };
+		const std::vector< CoatCase > clear = { { SheetKind::FloatGlass, CoatingKind::TitaniumDioxide, 0.5f, 0.0f } };
+		const int symmetric  = failuresOf( [ & ] { coatingCheck( r[ 0 ], r[ 1 ], kFaultCoatSymmetric, metal, false, true ); } );
+		const int incoherent = failuresOf( [ & ] { coatingCheck( r[ 0 ], r[ 1 ], kFaultCoatIncoherent, clear, true, false ); } );
+		Negative( symmetric > 0, fmt( "a metal coat that reflects the same from inside as from the air fails %.0f assertion(s)", symmetric ) );
+		Negative( incoherent > 0, fmt( "the coat's two faces added in intensity, not amplitude, fails %.0f assertion(s)", incoherent ) );
+	}
+	return failures == 0 ? 0 : 1;
+}
+
+//---------------------------------------------------------------------------
+// --falloff
+//---------------------------------------------------------------------------
+/// The pane's ghost of a white screen under a Viewing Angle: each
+/// subsample's film R, times the screen's luminance toward the ray that
+/// reaches it, cos^p of that ray's angle off the screen's normal, with p
+/// what halves it at half the Viewing Angle.
+void falloffCheck( int W, int H, int fault )
+{
+	MixRig rig;
+	if( !rig.Init( W, H, true, fault ) )
+		return;
+	physics( rig );
+	rig.UploadDest( flatField( W, H, kBlack ) );
+	rig.UploadSrc( flatField( W, H, kWhite ) );
+	for( double full : { 180.0, 120.0, 60.0 } )
+	{
+		rig.Set( "Viewing Angle", ParamForViewAngle( full * kDegree ) );
+		const Asked a = asked( rig.plugin );
+		const World w = worldFor( a, W, H, static_cast< double >( W ) / H );
+		//cos( half )^p = 1/2; a Lambertian screen, 180 degrees, has p = 0.
+		const double half = 0.5 * a.viewAngle;
+		const double p    = half >= 0.5 * kPi - 1e-9 ? 0.0 : std::log( 0.5 ) / std::log( std::cos( half ) );
+		rig.Render();
+		const ImageF img = rig.PixelsF();
+		double worst = 0.0, least = 1.0, most = 0.0;
+		long n       = 0;
+		for( int y = 0; y < H; ++y )
+			for( int x = 0; x < W; ++x )
+			{
+				if( !pixelOnScreen( w, x, y, 0.002 ) )
+					continue;
+				++n;
+				for( int c = 0; c < 3; ++c )
+				{
+					double want = 0.0, lambert = 0.0;
+					for( const auto& q : kSub )
+					{
+						const PaneHit h = paneRay( w, rayAt( w, x + 0.5 + q[ 0 ], y + 0.5 + q[ 1 ] ) );
+						const Fresnel f = fresnelAt( h.cosi, a.eta[ c ] );
+						const double R  = 0.5 * ( filmR( f.Rs ) + filmR( f.Rp ) );
+						//The screen's normal is vertical, up or down as it faces.
+						want += 0.25 * R * std::pow( std::fabs( h.reflected.y ), p );
+						lambert += 0.25 * R;
+					}
+					worst = std::max( worst, std::fabs( channel( img, W, x, y, c ) - want ) );
+					least = std::min( least, want / lambert );
+					most  = std::max( most, want / lambert );
+				}
+			}
+		Check( n > 1000 && worst <= kLightTol,
+		       fmt( "  Viewing Angle %.0f degrees (p %.2f): the ghost is the film's R x cos^p off the screen's normal, %.2f to %.2f of a Lambertian's", full, p, least, most )
+		           + fmt( " (%.0f pixels, worst %.2g, tolerance %.0e)", n, worst, kLightTol ) );
+	}
+}
+
+int runFalloff()
+{
+	std::printf( "the screen's angular falloff: luminance cos^p of the angle off its normal, half at half the Viewing Angle\n" );
+	for( const auto& r : kRasters )
+	{
+		std::printf( "\n  %dx%d\n", r[ 0 ], r[ 1 ] );
+		falloffCheck( r[ 0 ], r[ 1 ], kFaultNone );
+		const int off = failuresOf( [ & ] { falloffCheck( r[ 0 ], r[ 1 ], kFaultFalloffOff ); } );
+		Negative( off > 0, fmt( "the falloff ignored (every screen Lambertian) fails %.0f assertion(s)", off ) );
+	}
+	return failures == 0 ? 0 : 1;
+}
+
+//---------------------------------------------------------------------------
+// --polarised
+//---------------------------------------------------------------------------
+struct PolCase
+{
+	int sides;
+	CoatingKind coating;
+	double elevationDeg;
+	MountKind mount = MountKind::Below;
+};
+
+/// The pyramid's light, every polarisation, against the harness's own trace
+/// (pyramidLight): a ray that crosses one face and reflects off another meets
+/// two planes of incidence, so what the second does depends on the
+/// polarisation the first left -- the plugin carries it, as Q.
+void polarisedCheck( int W, int H, int fault, const std::vector< PolCase >& cases )
+{
+	MixRig rig;
+	if( !rig.Init( W, H, true, fault ) )
+		return;
+	for( const PolCase& pc : cases )
+	{
+		physics( rig );
+		rig.Set( "Rig", static_cast< float >( RigKind::Pyramid ) );
+		rig.Set( "Sides", pc.sides == 4 ? 0.0f : 1.0f );
+		rig.Set( "Screen", static_cast< float >( ScreenKind::AsIs ) );
+		rig.Set( "Sheet", static_cast< float >( SheetKind::Acrylic ) );
+		rig.Set( "Coating", static_cast< float >( pc.coating ) );
+		rig.Set( "Coat Thickness", 0.5f );
+		rig.Set( "Elevation", ParamForElevation( pc.elevationDeg * kDegree ) );
+		rig.Set( "Mount", static_cast< float >( pc.mount ) );
+		rig.UploadDest( flatField( W, H, kBlack ) );
+		rig.UploadSrc( flatField( W, H, kWhite ) );
+		const Asked a = asked( rig.plugin );
+		const World w = worldFor( a, W, H, static_cast< double >( W ) / H );
+
+		//The picture's axes on the screen, As Is (pyramidScreenPoint): y
+		//along world -z, x along world x below and -x overhead. Each
+		//option's field at its angle in them.
+		const Vec3 px = { w.above ? -1.0 : 1.0, 0, 0 }, py = { 0, 0, -1 };
+		const int kOptions = static_cast< int >( Polarisation::Count );
+		std::vector< Vec3 > fields( kOptions, Vec3 { 0, 0, 0 } );
+		const char* names[ 5 ] = { "None", "Horizontal", "Vertical", "45", "135" };
+		const double angles[ 5 ] = { 0.0, 0.0, 90.0, 45.0, 135.0 };
+		for( int k = 1; k < kOptions; ++k )
+			fields[ k ] = px * std::cos( angles[ k ] * kDegree ) + py * std::sin( angles[ k ] * kDegree );
+		std::vector< ImageF > img( kOptions );
+		for( int k = 0; k < kOptions; ++k )
+		{
+			rig.Set( "Polarisation", static_cast< float >( k ) );
+			rig.Render();
+			img[ k ] = rig.PixelsF();
+		}
+
+		const int step = std::max( 1, W / 80 );
+		std::vector< double > worst( kOptions, 0.0 );
+		double spread = 0.0, brightest = 0.0;
+		long n = 0, skipped = 0;
+		std::vector< double > one, sum;
+		for( int y = 0; y < H; y += step )
+			for( int x = 0; x < W; x += step )
+			{
+				sum.assign( kOptions * 3, 0.0 );
+				bool ok = true;
+				for( const auto& q : kSub )
+				{
+					if( !pyramidLight( w, a, rayAt( w, x + 0.5 + q[ 0 ], y + 0.5 + q[ 1 ] ), fields, one ) )
+					{
+						ok = false;
+						break;
+					}
+					for( size_t i = 0; i < one.size(); ++i )
+						sum[ i ] += 0.25 * one[ i ];
+				}
+				if( !ok )
+				{
+					++skipped;
+					continue;
+				}
+				++n;
+				for( int k = 0; k < kOptions; ++k )
+					for( int c = 0; c < 3; ++c )
+						worst[ k ] = std::max( worst[ k ], std::fabs( channel( img[ k ], W, x, y, c ) - sum[ k * 3 + c ] ) );
+				for( int c = 0; c < 3; ++c )
+				{
+					spread    = std::max( spread, std::fabs( sum[ 1 * 3 + c ] - sum[ 2 * 3 + c ] ) );
+					brightest = std::max( brightest, sum[ c ] );
+				}
+			}
+		int worstK = 0;
+		for( int k = 1; k < kOptions; ++k )
+			if( worst[ k ] > worst[ worstK ] )
+				worstK = k;
+		const std::string who = fmt( "  %.0f-sided pyramid", pc.sides ) + ( w.above ? ", apex up, " : ", " ) + NameOf( pc.coating ) + fmt( ", elevation %.0f", pc.elevationDeg );
+		Check( n > 1000 && worst[ worstK ] <= kLightTol,
+		       who + fmt( ": every polarisation's light is the 3D trace's (%.0f pixels, %.0f within roundoff of an edge skipped; worst %.2g", n, skipped, worst[ worstK ] ) + ", " + names[ worstK ]
+		           + fmt( ", tolerance %.0e)", kLightTol ) );
+		Check( spread > 100.0 * kLightTol && brightest > 0.05,
+		       who + fmt( ": and polarisation shows -- Horizontal and Vertical differ by up to %.3f (the brightest pixel %.3f)", spread, brightest ) );
+	}
+}
+
+int runPolarised()
+{
+	std::printf( "polarised light through the pyramid: every face carries on the polarisation the last one left\n" );
+	const std::vector< PolCase > cases = {
+		{ 4, CoatingKind::None, 0.0 },
+		{ 4, CoatingKind::Aluminium, 0.0 },
+		{ 4, CoatingKind::TitaniumDioxide, 0.0 },
+		{ 3, CoatingKind::None, 0.0 },
+		{ 4, CoatingKind::Aluminium, 25.0 },
+		{ 4, CoatingKind::Aluminium, 10.0, MountKind::Above },
+	};
+	for( const auto& r : kRasters )
+	{
+		std::printf( "\n  %dx%d\n", r[ 0 ], r[ 1 ] );
+		polarisedCheck( r[ 0 ], r[ 1 ], kFaultNone, cases );
+		const int lastOnly = failuresOf( [ & ] { polarisedCheck( r[ 0 ], r[ 1 ], kFaultLastOnly, { cases[ 0 ], cases[ 1 ] } ); } );
+		Negative( lastOnly > 0, fmt( "the polarisation forgotten at every face but the one nearest the screen (v0.1.0) fails %.0f assertion(s)", lastOnly ) );
+	}
+	return failures == 0 ? 0 : 1;
+}
+
+//---------------------------------------------------------------------------
 // --geometry
 //---------------------------------------------------------------------------
 struct View
 {
 	double angle, elevation, azimuth;
+	MountKind mount = MountKind::Below;
 };
 
 const std::vector< Dot > kCorners = { { 0.2, 0.2 }, { 0.8, 0.2 }, { 0.2, 0.8 }, { 0.8, 0.8 }, { 0.62, 0.55 } };
@@ -1076,6 +1838,7 @@ DotFit fitDots( int W, int H, int fault, const View& v )
 	rig.Set( "Sheet Angle", ParamForSheetAngle( v.angle * kDegree ) );
 	rig.Set( "Elevation", ParamForElevation( v.elevation * kDegree ) );
 	rig.Set( "Azimuth", ParamForAzimuth( v.azimuth * kDegree ) );
+	rig.Set( "Mount", static_cast< float >( v.mount ) );
 	rig.UploadDest( flatField( W, H, kBlack ) );
 	rig.UploadSrc( dotsCard( kSrcW, kSrcH, kCorners, kSide ) );
 	rig.Render();
@@ -1141,11 +1904,13 @@ void geometryCheck( int W, int H, int fault, const std::vector< View >& views )
 			if( e > f.tol[ i ] )
 				++wrong;
 		}
+		const std::string mount = v.mount == MountKind::Above ? "screen above, " : "";
 		Check( seen >= 4 && wrong == 0,
-		       fmt( "  sheet %.0f, elevation %.0f, azimuth %.0f: ", v.angle, v.elevation, v.azimuth )
+		       "  " + mount + fmt( "sheet %.0f, elevation %.0f, azimuth %.0f: ", v.angle, v.elevation, v.azimuth )
 		           + fmt( "%.0f of the %.0f dots in view where the mirror puts them (worst found %.2f of its tolerance)", seen - wrong, seen, worst ) );
 		if( f.found[ 0 ] && f.found[ 1 ] && f.found[ 2 ] )
-			Check( signedArea( f.gx[ 0 ], f.gy[ 0 ], f.gx[ 1 ], f.gy[ 1 ], f.gx[ 2 ], f.gy[ 2 ] ) > 0.0, "    and the ghost reads the right way round, not mirrored" );
+			Check( signedArea( f.gx[ 0 ], f.gy[ 0 ], f.gx[ 1 ], f.gy[ 1 ], f.gx[ 2 ], f.gy[ 2 ] ) > 0.0 && f.gy[ 2 ] > f.gy[ 0 ],
+			       "    and the ghost reads the right way round and stands up: not mirrored, not inverted" );
 		if( v.elevation == 0.0 && v.azimuth == 0.0 && f.found[ 0 ] && f.found[ 1 ] && f.found[ 2 ] && f.found[ 3 ] )
 		{
 			const double top = f.gx[ 3 ] - f.gx[ 2 ], bottom = f.gx[ 1 ] - f.gx[ 0 ];
@@ -1166,15 +1931,25 @@ void geometryCheck( int W, int H, int fault, const std::vector< View >& views )
 int runGeometry()
 {
 	std::printf( "a dot on the hidden screen appears where the pane's mirror image of it is, projected\n" );
-	const std::vector< View > views = { { 45, 0, 0 }, { 40, 0, 0 }, { 50, 0, 0 }, { 45, 15, 0 }, { 45, 0, 25 }, { 55, 10, -20 } };
+	const std::vector< View > views = { { 45, 0, 0 },
+		                                { 40, 0, 0 },
+		                                { 50, 0, 0 },
+		                                { 45, 15, 0 },
+		                                { 45, 0, 25 },
+		                                { 55, 10, -20 },
+		                                { 45, 0, 0, MountKind::Above },
+		                                { 40, 0, 0, MountKind::Above },
+		                                { 50, -10, 20, MountKind::Above } };
 	for( const auto& r : kRasters )
 	{
 		std::printf( "\n  %dx%d\n", r[ 0 ], r[ 1 ] );
 		geometryCheck( r[ 0 ], r[ 1 ], kFaultNone, views );
 		const int fixed    = failuresOf( [ & ] { geometryCheck( r[ 0 ], r[ 1 ], kFaultFixed45, { { 40, 0, 0 }, { 50, 0, 0 } } ); } );
 		const int mirrored = failuresOf( [ & ] { geometryCheck( r[ 0 ], r[ 1 ], kFaultMirrored, { { 45, 0, 0 } } ); } );
+		const int asBelow  = failuresOf( [ & ] { geometryCheck( r[ 0 ], r[ 1 ], kFaultAboveAsBelow, { { 45, 0, 0, MountKind::Above } } ); } );
 		Negative( fixed > 0, fmt( "the reflection about a 45-degree pane whatever Sheet Angle says fails %.0f assertion(s)", fixed ) );
 		Negative( mirrored > 0, fmt( "the screen's picture mirrored left to right fails %.0f assertion(s)", mirrored ) );
+		Negative( asBelow > 0, fmt( "the screen overhead showing the floor's picture fails %.0f assertion(s)", asBelow ) );
 	}
 	return failures == 0 ? 0 : 1;
 }
@@ -1440,6 +2215,9 @@ int firstSheet( const World& w, Vec3 o, Vec3 d, double& t )
 /// lower part of the near face's ghost (AGENTS.md) -- real, and in the way
 /// of a measurement, so the dots stay above it.
 const std::vector< Dot > kHighTriangle = { { 0.28, 0.62 }, { 0.72, 0.66 }, { 0.40, 0.90 } };
+/// Apex up the room is the same upside down: the far arm crosses the upper
+/// part of the near face's ghost, and the dots stay below it.
+const std::vector< Dot > kLowTriangle = { { 0.28, 0.10 }, { 0.72, 0.14 }, { 0.40, 0.38 } };
 
 struct PyramidDots
 {
@@ -1458,7 +2236,8 @@ struct PyramidDots
 using FeedPoints = std::map< int, std::pair< double, double > >;
 
 PyramidDots pyramidDots( int W, int H, int fault, int sides, double azimuthDeg, double elevationDeg, bool direct,
-                         const FeedPoints* fromFeed = nullptr, double feedPixel = 0.0, const Image* clip = nullptr, int clipW = 640, int clipH = 360 )
+                         const FeedPoints* fromFeed = nullptr, double feedPixel = 0.0, const Image* clip = nullptr, int clipW = 640, int clipH = 360,
+                         MountKind mount = MountKind::Below )
 {
 	PyramidDots r;
 	constexpr int kSide = 32;
@@ -1472,9 +2251,11 @@ PyramidDots pyramidDots( int W, int H, int fault, int sides, double azimuthDeg, 
 	rig.Set( "Sheet", static_cast< float >( SheetKind::Acrylic ) );
 	rig.Set( "Elevation", ParamForElevation( elevationDeg * kDegree ) );
 	rig.Set( "Azimuth", ParamForAzimuth( azimuthDeg * kDegree ) );
+	rig.Set( "Mount", static_cast< float >( mount ) );
 	rig.UploadDest( flatField( W, H, kBlack ) );
-	const int side = clip ? std::max( 4, clipW / 24 ) : kSide;
-	rig.UploadSrc( clip ? *clip : dotsCard( clipW, clipH, kHighTriangle, side ) );
+	const int side                  = clip ? std::max( 4, clipW / 24 ) : kSide;
+	const std::vector< Dot >& spots = clip ? kTriangle : ( mount == MountKind::Above ? kLowTriangle : kHighTriangle );
+	rig.UploadSrc( clip ? *clip : dotsCard( clipW, clipH, spots, side ) );
 	rig.Render();
 	const ImageF img = rig.PixelsF();
 	const World w    = worldFor( asked( rig.plugin ), W, H, static_cast< double >( clipW ) / clipH );
@@ -1487,12 +2268,13 @@ PyramidDots pyramidDots( int W, int H, int fault, int sides, double azimuthDeg, 
 		bool all = true;
 		for( int i = 0; i < 3; ++i )
 		{
-			const Dot c = dotCentre( kHighTriangle[ i ], clipW, clipH, side );
+			const Dot c  = dotCentre( spots[ i ], clipW, clipH, side );
+			const int k  = direct ? j : armUnder( w, j );
 			double fx, fy;
-			feedPoint( sides, w.r0, w.armW, w.armD, j, c.u, c.v, fx, fy );
+			feedPointFor( w, k, c.u, c.v, fx, fy );
 			if( fromFeed )
 			{
-				const auto found = fromFeed->find( 3 * j + i );
+				const auto found = fromFeed->find( 3 * k + i );
 				if( found == fromFeed->end() )
 				{
 					all = false;
@@ -1501,7 +2283,7 @@ PyramidDots pyramidDots( int W, int H, int fault, int sides, double azimuthDeg, 
 				fx = found->second.first;
 				fy = found->second.second;
 			}
-			const Vec3 S = { fx, 0.0, -fy };
+			const Vec3 S = pyramidScreenPoint( w, fx, fy );
 			const Vec3 X = direct ? S : mirror( w.sheets[ j ], S );
 			double x, y;
 			if( !project( w, X, x, y ) )
@@ -1527,8 +2309,8 @@ PyramidDots pyramidDots( int W, int H, int fault, int sides, double azimuthDeg, 
 			for( int k = 0; k < 4; ++k )
 			{
 				double ex, ey, qx, qy;
-				feedPoint( sides, w.r0, w.armW, w.armD, j, c.u + du[ k ], c.v + dv[ k ], qx, qy );
-				const Vec3 Q = { qx, 0.0, -qy };
+				feedPointFor( w, direct ? j : armUnder( w, j ), c.u + du[ k ], c.v + dv[ k ], qx, qy );
+				const Vec3 Q = pyramidScreenPoint( w, qx, qy );
 				project( w, direct ? Q : mirror( w.sheets[ j ], Q ), ex, ey );
 				cx += 0.25 * ex;
 				cy += 0.25 * ey;
@@ -1552,7 +2334,7 @@ PyramidDots pyramidDots( int W, int H, int fault, int sides, double azimuthDeg, 
 			{
 				//The feed's own measurement error, 0.375 of its pixels, seen here.
 				double ex, ey;
-				project( w, Vec3 { fx + feedPixel, 0.0, -fy }, ex, ey );
+				project( w, pyramidScreenPoint( w, fx + feedPixel, fy ), ex, ey );
 				tol += 0.375 * std::hypot( ex - x, ey - y );
 			}
 			const double e = std::hypot( gx[ i ] - x, gy[ i ] - y );
@@ -1574,21 +2356,34 @@ PyramidDots pyramidDots( int W, int H, int fault, int sides, double azimuthDeg, 
 	return r;
 }
 
-void pyramidCheck( int W, int H, int fault )
+void pyramidCheck( int W, int H, int fault, bool belowToo = true )
 {
 	const struct
 	{
 		int sides;
+		MountKind mount;
 		std::vector< double > azimuths;
-	} cases[] = { { 4, { 0, 90, 180, -90 } }, { 3, { 0, 120, -120 } } };
+		double elevation;
+	} cases[] = { { 4, MountKind::Below, { 0, 90, 180, -90 }, 0.0 },
+		          { 3, MountKind::Below, { 0, 120, -120 }, 0.0 },
+		          { 4, MountKind::Above, { 0, 90, 180, -90 }, 0.0 },
+		          { 3, MountKind::Above, { 0, 120, -120 }, 0.0 },
+		          { 4, MountKind::Above, { 0, 45 }, 10.0 } };
 	for( const auto& c : cases )
+	{
+		if( !belowToo && c.mount == MountKind::Below )
+			continue;
 		for( double az : c.azimuths )
 		{
-			const PyramidDots d = pyramidDots( W, H, fault, c.sides, az, 0.0, false );
+			const PyramidDots d = pyramidDots( W, H, fault, c.sides, az, c.elevation, false, nullptr, 0.0, nullptr, 640, 360, c.mount );
 			Check( d.seen == 3 && d.wrong == 0 && d.orientations == 1 && d.orientationOk,
-			       fmt( "  %.0f sides, from azimuth %.0f: the near face shows the clip the right way round, ", c.sides, az )
+			       std::string( c.mount == MountKind::Above ? "  apex up under the screen, " : "  " )
+			           + fmt( "%.0f sides, from azimuth %.0f, elevation %.0f: the near face shows the clip the right way round, ", c.sides, az, c.elevation )
 			           + fmt( "%.0f of 3 dots where its mirror puts them (worst found %.2f of tolerance)", d.seen - d.wrong, d.worst ) );
 		}
+	}
+	if( !belowToo )
+		return;
 	const PyramidDots top = pyramidDots( W, H, fault, 4, 0.0, 60.0, true );
 	Check( top.seen >= 8 && top.wrong == 0 && top.orientations >= 2 && top.orientationOk,
 	       fmt( "  from 60 degrees up the screen is seen directly: %.0f dots of %.0f arms where they are, each arm mirrored (worst found %.2f of tolerance)",
@@ -1602,8 +2397,10 @@ int runPyramid()
 	{
 		std::printf( "\n  %dx%d\n", r[ 0 ], r[ 1 ] );
 		pyramidCheck( r[ 0 ], r[ 1 ], kFaultNone );
-		const int caught = failuresOf( [ & ] { pyramidCheck( r[ 0 ], r[ 1 ], kFaultRotatedArms ); } );
+		const int caught  = failuresOf( [ & ] { pyramidCheck( r[ 0 ], r[ 1 ], kFaultRotatedArms ); } );
+		const int asBelow = failuresOf( [ & ] { pyramidCheck( r[ 0 ], r[ 1 ], kFaultAboveAsBelow, false ); } );
 		Negative( caught > 0, fmt( "the arms as rotated copies, not reflections, fails %.0f assertion(s)", caught ) );
+		Negative( asBelow > 0, fmt( "apex up with the feed and picture laid out for apex down fails %.0f assertion(s)", asBelow ) );
 	}
 	return failures == 0 ? 0 : 1;
 }
@@ -1617,12 +2414,15 @@ void feedCheck( int W, int H, int fault )
 	const int inW = W / 4, inH = H / 4;
 	const int side = std::max( 4, inW / 24 );
 	const Image clip = dotsCard( inW, inH, kTriangle, side );
+	for( MountKind mount : { MountKind::Below, MountKind::Above } )
 	for( int sides : { 4, 3 } )
 	{
 		FeedRig rig;
 		if( !rig.Init( W, H, InputSpec::Exact( inW, inH ), true, fault ) )
 			return;
 		rig.Set( "Sides", sides == 4 ? 0.0f : 1.0f );
+		rig.Set( "Mount", static_cast< float >( mount ) );
+		const bool above = mount == MountKind::Above;
 		rig.Upload( clip );
 		rig.Render();
 		const ImageF img = rig.out.PixelsF();
@@ -1645,7 +2445,8 @@ void feedCheck( int W, int H, int fault )
 			{
 				const Dot d = dotCentre( kTriangle[ i ], inW, inH, side );
 				double fx, fy;
-				feedPoint( sides, r0, armW, armD, j, d.u, d.v, fx, fy );
+				//Apex up, each arm holds the clip a half turn round: top inward.
+				feedPoint( sides, r0, armW, armD, j, above ? 1.0 - d.u : d.u, above ? 1.0 - d.v : d.v, fx, fy );
 				const double x = fx * S + 0.5 * W, y = fy * S + 0.5 * H;
 				double mass;
 				//Half the dot, in the arm's pixels, and some.
@@ -1663,9 +2464,10 @@ void feedCheck( int W, int H, int fault )
 			if( found == 3 && signedArea( gx[ 0 ], gy[ 0 ], gx[ 1 ], gy[ 1 ], gx[ 2 ], gy[ 2 ] ) < 0.0 )
 				++mirrored;
 		}
+		const std::string who = std::string( above ? "  screen above (top inward), " : "  " ) + fmt( "%.0f sides", sides );
 		Check( seen == 3 * sides && wrong == 0,
-		       fmt( "  %.0f sides: %.0f of %.0f dots where its arm puts them (worst found %.3f px, tolerance 0.375)", sides, seen - wrong, 3.0 * sides, worst ) );
-		Check( mirrored == sides, fmt( "  every arm holds the clip MIRRORED, determinant -1 (%.0f of %.0f)", mirrored, sides ) );
+		       who + fmt( ": %.0f of %.0f dots where its arm puts them (worst found %.3f px, tolerance 0.375)", seen - wrong, 3.0 * sides, worst ) );
+		Check( mirrored == sides, who + fmt( ": every arm holds the clip MIRRORED, determinant -1 (%.0f of %.0f)", mirrored, sides ) );
 
 		//Outside the arms: exactly black. Everywhere: opaque.
 		int lit = 0, translucent = 0;
@@ -1687,29 +2489,41 @@ void feedCheck( int W, int H, int fault )
 				if( !inside && ( bytes[ at ] || bytes[ at + 1 ] || bytes[ at + 2 ] ) )
 					++lit;
 			}
-		Check( lit == 0 && translucent == 0, fmt( "  outside the arms exactly black (%.0f lit), alpha 255 everywhere (%.0f not)", lit, translucent ) );
+		Check( lit == 0 && translucent == 0, who + fmt( ": outside the arms exactly black (%.0f lit), alpha 255 everywhere (%.0f not)", lit, translucent ) );
 
 		//The simulator looks into the same layout: from 60 degrees up, SW
 		//Pepper's pyramid screen shows each dot where the FEED was measured
 		//to put it -- the two plugins compared, not each against a formula.
-		if( sides == 4 )
+		if( sides == 4 && !above )
 		{
 			const PyramidDots top = pyramidDots( W, H, fault, 4, 0.0, 60.0, true, &measured, 1.0 / S, &clip, inW, inH );
 			Check( top.seen >= 8 && top.wrong == 0,
 			       fmt( "  SW Pepper's pyramid screen shows the feed's own dots where the feed drew them (%.0f seen from 60 degrees up, worst %.2f of tolerance)", top.seen, top.worst ) );
+		}
+		//Overhead the screen faces away from any seat: compared instead in
+		//the near face, which must show the feed's dots where its mirror
+		//puts the ones the feed drew, the right way round.
+		if( sides == 4 && above )
+		{
+			const PyramidDots face = pyramidDots( W, H, fault, 4, 0.0, 10.0, false, &measured, 1.0 / S, &clip, inW, inH, MountKind::Above );
+			Check( face.seen == 3 && face.wrong == 0 && face.orientationOk,
+			       fmt( "  apex up, SW Pepper's near face shows the feed's own dots where its mirror puts them, the right way round (%.0f seen, worst %.2f of tolerance)", face.seen,
+			            face.worst ) );
 		}
 	}
 }
 
 int runFeed()
 {
-	std::printf( "SW Pepper Feed: the clip in each arm, top outward, as a mirror image, over black\n" );
+	std::printf( "SW Pepper Feed: the clip in each arm, top outward (screen above: inward), as a mirror image, over black\n" );
 	for( const auto& r : kRasters )
 	{
 		std::printf( "\n  %dx%d\n", r[ 0 ], r[ 1 ] );
 		feedCheck( r[ 0 ], r[ 1 ], kFaultNone );
-		const int caught = failuresOf( [ & ] { feedCheck( r[ 0 ], r[ 1 ], kFaultRotatedArms ); } );
+		const int caught  = failuresOf( [ & ] { feedCheck( r[ 0 ], r[ 1 ], kFaultRotatedArms ); } );
+		const int asBelow = failuresOf( [ & ] { feedCheck( r[ 0 ], r[ 1 ], kFaultAboveAsBelow ); } );
 		Negative( caught > 0, fmt( "rotated arms, the common layout, fails %.0f assertion(s)", caught ) );
+		Negative( asBelow > 0, fmt( "the screen-above feed laid out top outward, as for apex down, fails %.0f assertion(s)", asBelow ) );
 	}
 	return failures == 0 ? 0 : 1;
 }
@@ -1721,8 +2535,8 @@ int runMutation()
 {
 	std::printf( "one character of the shipped fragment shader fails a check\n\n" );
 	const std::string shipped = AssembleFragment( kPepperFragment );
-	const std::string from    = "vec3 tau  = pow( Tint, vec3( 1.0 / max( cost, 1e-4 ) ) );";
-	const std::string to      = "vec3 tau  = pow( Tint, vec3( 1.0 / max( cosi, 1e-4 ) ) );";
+	const std::string from    = "vec3 tau  = pow( Tint, 1.0 / max( cost, vec3( 1e-4 ) ) );";
+	const std::string to      = "vec3 tau  = pow( Tint, 1.0 * max( cost, vec3( 1e-4 ) ) );";
 	const size_t at           = shipped.find( from );
 	Check( at != std::string::npos && shipped.find( from, at + 1 ) == std::string::npos, "the line to mutate occurs exactly once in the shipped shader" );
 	if( at == std::string::npos )
@@ -1733,7 +2547,7 @@ int runMutation()
 	for( size_t i = 0; i < shipped.size(); ++i )
 		if( shipped[ i ] != mutated[ i ] )
 			++differ;
-	Check( differ == 1, fmt( "the mutation is one character (%.0f differ): the tint's path from the angle of incidence, not of refraction", differ ) );
+	Check( differ == 1, fmt( "the mutation is one character (%.0f differ): the tint over cos(t) of the path, not 1 / cos(t)", differ ) );
 
 	Image defaultBytes, hookBytes;
 	for( int pass = 0; pass < 2; ++pass )
@@ -2103,8 +2917,8 @@ void usage()
 		"  --set \"Name=V\"    a parameter by display name, in host units, or an option by its\n"
 		"                    element name (\"Rig=Pyramid\"). Repeatable. Unparsable values are refused.\n"
 		"  --list            every parameter, its kind, default and range\n"
-		"  --names --mixer --additive --energy --fresnel --double --geometry --ripple\n"
-		"  --opacity --pyramid --feed --mutation\n"
+		"  --names --mixer --additive --energy --fresnel --double --coating --falloff\n"
+		"  --polarised --geometry --ripple --opacity --pyramid --feed --mutation\n"
 		"                    the checks (see the top of tools/pgtest/main.cpp)\n"
 		"  --bench           ms/frame at 720p, 1080p and 4K (--frames N, default 30)\n"
 		"  --pipe            raw RGBA Dest frames on stdin, raw RGBA frames on stdout\n"
@@ -2138,7 +2952,7 @@ int main( int argc, char** argv )
 	bool wantList = false, wantBench = false, wantPipe = false;
 	std::string scriptPath, srcPath, check;
 	std::vector< std::string > settings;
-	static const char* checks[] = { "--names", "--mixer", "--additive", "--energy", "--fresnel", "--double", "--geometry",
+	static const char* checks[] = { "--names", "--mixer", "--additive", "--energy", "--fresnel", "--double", "--coating", "--falloff", "--polarised", "--geometry",
 		                            "--ripple", "--opacity", "--pyramid", "--feed", "--mutation" };
 
 	for( int i = 1; i < argc; ++i )
@@ -2248,6 +3062,12 @@ int main( int argc, char** argv )
 		result = runFresnel();
 	else if( check == "--double" )
 		result = runDouble();
+	else if( check == "--coating" )
+		result = runCoating();
+	else if( check == "--falloff" )
+		result = runFalloff();
+	else if( check == "--polarised" )
+		result = runPolarised();
 	else if( check == "--geometry" )
 		result = runGeometry();
 	else if( check == "--ripple" )
