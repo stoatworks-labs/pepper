@@ -2,9 +2,9 @@
     What a host sees of a built Windows DLL, with no GL and no Resolume.
 
         tools/wincheck.ps1 -Dll build/Release/Pepper.dll -Name "SW Pepper" -Id PG01 `
-                           -Kind mixer -Params 30 -First "Linear Light"
+                           -Kind mixer -Params 31 -First "Linear Light"
         tools/wincheck.ps1 -Dll build/Release/PepperFeed.dll -Name "SW Pepper Feed" `
-                           -Id PG02 -Kind effect -Params 7 -First "Sides"
+                           -Id PG02 -Kind effect -Params 8 -First "Sides"
 
     It LOADS the DLL (so a missing runtime or dependency fails here, where
     dumpbin cannot see it), finds plugMain, and asks it what Resolume asks

@@ -72,9 +72,9 @@ jobs:
       - name: Check the DLLs (Windows)
         if: runner.os == 'Windows'
         run: |
-          ./tools/wincheck.ps1 -Dll "build/Release/Pepper.dll" -Name "SW Pepper" -Id PG01 -Kind mixer -Params 30 -First "Linear Light"
+          ./tools/wincheck.ps1 -Dll "build/Release/Pepper.dll" -Name "SW Pepper" -Id PG01 -Kind mixer -Params 31 -First "Linear Light"
           if( $LASTEXITCODE ) { exit $LASTEXITCODE }
-          ./tools/wincheck.ps1 -Dll "build/Release/PepperFeed.dll" -Name "SW Pepper Feed" -Id PG02 -Kind effect -Params 7 -First "Sides"
+          ./tools/wincheck.ps1 -Dll "build/Release/PepperFeed.dll" -Name "SW Pepper Feed" -Id PG02 -Kind effect -Params 8 -First "Sides"
           if( $LASTEXITCODE ) { exit $LASTEXITCODE }
 
       - name: Derive version
