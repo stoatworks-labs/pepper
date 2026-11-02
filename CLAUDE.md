@@ -3,8 +3,9 @@
 Pepper's ghost for Resolume Arena/Avenue: a clear sheet at an angle reflecting
 a hidden screen over the stage behind it, traced per pixel in linear light. It
 ships as two FFGL plugins from one core, written in C++/GLSL, built with CMake
-as MODULEs into two universal `.bundle`s (macOS). MIT. **Local only,
-v0.1.0:** no GitHub repository, no release, **never loaded into Resolume**.
+as MODULEs into two universal `.bundle`s (macOS). MIT. **v0.1.0,
+public at github.com/stoatworks-labs/pepper.** Never loaded into Resolume on
+macOS.
 
 | | id | display name | bundle | type |
 | --- | --- | --- | --- | --- |
@@ -155,10 +156,11 @@ control (`SetFaultForTest`).
   write. They get overwritten once Pepper is in the backend's lists.
 
 ## Not done yet
-- Never loaded into Resolume, on either platform. No Windows build. No GitHub
-  repository, release, website page, demo or video. **Releasing needs Allan's
-  go-ahead.**
-- No CI, on purpose: a new repo is private, and private repos get no workflows.
+- Never loaded into Resolume on macOS.
+- CI (`.github/workflows/ci.yml`) builds macOS and Windows on every push and
+  runs the GL-free checks (`--list`, `--names`, glslc). The pixel checks need
+  a GPU and run only in `verify.sh`. `release.yml` builds the four release
+  assets; a dispatch builds without publishing.
 - Not modelled (AGENTS.md says why):
   - haze, scattering and dust: it needs a blurred copy of each input, a pass
     the plugin does not have;

@@ -10,11 +10,10 @@ built with CMake into two universal macOS `.bundle`s. MIT.
 | the pane, the foil and the pyramid, seen | `PG01` | `SW Pepper` | `Pepper.bundle` | **mixer**, 2 inputs |
 | the cross layout a real pyramid is fed | `PG02` | `SW Pepper Feed` | `PepperFeed.bundle` | effect, 1 input |
 
-**Status, 2026-11-02:** v0.1.0, **local only**.
+**Status, 2026-11-02:** v0.1.0, released on Allan's go-ahead ("Yes, release
+Pepper"), public at https://github.com/stoatworks-labs/pepper.
 
-- There is no GitHub repository, no tag and no release, and the website and
-  backend know nothing of it. Releasing needs Allan's go-ahead.
-- It has **never been loaded into Resolume**, on either platform.
+- It has **never been loaded into Resolume on macOS**.
 - It started in tranche four, from IDEAS.md. The spec is
   `~/Projects/resolume/specs/SPEC-pepper.md`.
 
@@ -571,9 +570,11 @@ the plugin one input. That makes it a useful assertion: the mixer must
     retardance and axis at every point, which nobody has for their foil. The
     in-plane index is used.
   - **A stage with depth**: Dest is a picture, not a 3D set.
-- **No CI workflow.** There is no repository. If one is made it would be
-  private by default, and private repos get no workflows (`~/.claude/CLAUDE.md`).
-  `verify.sh` is the release check, run locally.
+- **CI runs only what needs no GL.** The macOS runner cannot make an
+  accelerated context, so `ci.yml` runs `pgtest --list`, `--names` and glslc,
+  and builds Windows. `verify.sh` is the release check, run locally.
+  `tools/wincheck.ps1` (throw's, with a mixer kind and the input caps) loads
+  each shipped DLL in the release workflow.
 - **The Feed's `SetTimeSupported`** is left at the SDK default (true). It has no
   clock and ignores the time.
 
@@ -622,10 +623,6 @@ These are the README's Status table, from `pgtest`, `tools/mutate.sh`,
   dioxide, from published indices. Does a real Musion-style foil reflect what
   either gives at some thickness? A measured reflectance at 45° would pin it.
 - **Haze**: worth the second pass it would take (Not modelled, above)?
-- **Release**: needs Allan's go-ahead.
-  - The repository's visibility and CI follow from that.
-  - The About block and ATTRIBUTIONS.md then move into the backend's lists.
-  - An Arena session is needed before anything is said about Resolume.
 
 ## Notes
 

@@ -1,0 +1,102 @@
+name: ci
+
+# macOS and Windows. The CMakeLists branches on APPLE and WIN32 and has no
+# Linux path at all, so ubuntu is not an option. The Windows job is throw's
+# (schlieren's and pitch's before it): a GLEW-shaped break is one macOS is
+# structurally blind to, because macOS never links GLEW. This job is the only
+# place Pepper is built on Windows outside a release.
+#
+# The macOS runner cannot create an accelerated GL context, so the harness runs
+# only what needs none: `pgtest --list` for each plugin and `pgtest --names`
+# (the ids, the sixteen-byte names, parameter 0 and Opacity). The shaders are
+# covered the other way, by glslc. The pixel checks run in tools/verify.sh, on
+# a Mac with a GPU and again on Apple's software renderer -- what this runner
+# would fall back to.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  macos:
+    name: macOS
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The FFGL SDK is a submodule. Without this CMake fails at configure
+          # time with a missing-directory error that reads like a broken repo.
+          submodules: recursive
+
+      - name: Configure
+        # arm64 only, unlike the release build's universal arm64;x86_64: the
+        # second slice doubles the build for no extra signal, because a source
+        # break is not architecture-specific. Passed as a single value with no
+        # semicolon, which the shell would split.
+        run: >
+          cmake -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_OSX_ARCHITECTURES=arm64
+          -DPEPPER_BUILD_TOOLS=ON
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Parameters
+        # No GL needed, so this one cannot be a runner problem.
+        run: |
+          ./build/pgtest --list
+          ./build/pgtest --list --plugin feed
+
+      - name: Names
+        # The ids, the names as a host reads sixteen bytes, parameter 0 (which
+        # Arena hides in a mixer) and Opacity (which it binds to the layer
+        # fader), with their negative controls. No GL context.
+        run: ./build/pgtest --names
+
+      - name: Shaders compile
+        # The same script tools/verify.sh runs. GLSLC_REQUIRED: a runner
+        # without glslc must fail, not skip.
+        run: |
+          brew install shaderc
+          GLSLC_REQUIRED=1 tools/glslc.sh
+
+      # Uploading is not only for the artefact: it means a Dependabot bump to
+      # actions/upload-artifact is exercised by a check, not only by a release.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pepper-macos-arm64
+          path: build/*.bundle
+          if-no-files-found: error
+
+  windows:
+    name: Windows
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Configure
+        # The toolchain path MUST stay double-quoted: a `run:` step on Windows
+        # is PowerShell, and unquoted this expands to nothing. Tools off: pgtest
+        # links CGL and is macOS-only. Applocal off: the two plugins link in
+        # the same instant, and vcpkg's per-DLL copy steps once raced each
+        # other to an exit 32 (slipstream, 2026-10-20).
+        run: >
+          cmake -B build -A x64
+          -DCMAKE_BUILD_TYPE=Release
+          -DPEPPER_BUILD_TOOLS=OFF
+          -DVCPKG_APPLOCAL_DEPS=OFF
+          -DVCPKG_TARGET_TRIPLET=x64-windows-static-md
+          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pepper-windows-x86_64
+          path: build/Release/*.dll
+          if-no-files-found: error

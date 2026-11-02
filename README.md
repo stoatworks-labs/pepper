@@ -41,6 +41,9 @@ is no ghost.</sub>
 | the pane, the foil and the pyramid, seen | `PG01` | `SW Pepper` | `Pepper.bundle`, `com.stoatworks.ffgl.pepper` | **mixer** |
 | the cross layout a real pyramid is fed | `PG02` | `SW Pepper Feed` | `PepperFeed.bundle`, `com.stoatworks.ffgl.pepperfeed` | effect |
 
+<!-- downloads:start -->
+<!-- downloads:end -->
+
 ## Pepper's ghost is one sheet of glass
 
 A clear sheet at an angle splits every ray into a reflected part and a
@@ -297,7 +300,7 @@ something stated rather than from the number this machine printed first.
 
 ## Status
 
-**v0.1.0, local only, not released.** Verified by measurement on an Apple M4
+**v0.1.0.** Verified by measurement on an Apple M4
 Max, macOS 26.4.1, 2026-11-02, at 640×360 **and** 320×180 unless stated, on
 the GPU and on Apple's software renderer:
 
@@ -331,8 +334,9 @@ Run `tools/verify.sh` before believing any of it.
 - Pepper has **never been loaded into Resolume**, on any platform. Nothing here
   shows Arena accepting it, hiding Linear Light, or driving Opacity from the
   fader on this plugin. Those are the fleet's measurements on other mixers.
-- It is not released: there is no GitHub repository, no download and no
-  Windows build.
+- The Windows build is compiled by CI (`release.yml`) and checked by
+  `tools/wincheck.ps1` for what a host reads first; no pixel of it has been
+  checked on Windows.
 - The harness has run on two rasterisers, this Mac's GPU and Apple's software
   renderer. No other has run it.
 
