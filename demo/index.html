@@ -8,16 +8,44 @@
     <link rel="icon" href="data:," />
     <link rel="stylesheet" href="./vendor/kit.css" />
     <link rel="canonical" href="https://pepper-demo.stoatworks-labs.com/" />
+    <meta name="project-page" content="https://stoatworks-labs.com/software/pepper/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Stoatworks Labs" />
+    <meta property="og:title" content="SW Pepper — browser demo | Stoatworks Labs" />
+    <meta property="og:description" content="Try SW Pepper, an FFGL mixer for Resolume, in your browser: Pepper's ghost, a clear sheet at an angle reflecting a hidden screen over the stage behind it, traced per pixel in linear light — the Victorian pane, a Musion-style foil and the phone pyramid, with dispersion, coated foils, polarisation and a rippling foil. The plugin's own GLSL, ported to WebGL2 unedited, fed by a JavaScript port of its CPU half. A demo, not the plugin." />
+    <meta property="og:url" content="https://pepper-demo.stoatworks-labs.com/" />
+    <meta property="og:image" content="https://stoatworks-labs.com/thumbs/pepper.png" />
+    <meta property="og:image:width" content="1280" />
+    <meta property="og:image:height" content="720" />
+    <meta property="og:image:alt" content="SW Pepper" />
+    <meta name="twitter:card" content="summary_large_image" />
   </head>
   <body data-plugin="pepper">
     <main id="demo">
       <noscript>
+        <h1>SW Pepper</h1>
+        <p>
+          An FFGL mixer that puts the layer below behind a sheet of glass and
+          this layer on a hidden screen reflecting in it, the way Pepper's ghost
+          has worked since 1862: a Victorian pane, a Musion-style foil or the
+          plastic pyramid people stand on a phone. The sheet reflects what
+          Fresnel says it does at every pixel's angle and lets the rest through,
+          so the ghost only ever adds light, vanishes at Brewster's angle under
+          polarised light, doubles in a thick pane and shimmers on a foil that
+          rings like a drum. A second plugin, SW Pepper Feed, lays a clip out
+          for a real pyramid.
+        </p>
         <p>
           This demo runs the plugin's shaders and a port of its CPU half in your
           browser, so it needs JavaScript and WebGL2. The plugin itself, its
           source and its downloads are on
           <a href="https://github.com/stoatworks-labs/pepper">its repository</a>.
         </p>
+        <ul>
+          <li><a href="https://stoatworks-labs.com/software/pepper/">Project page and downloads</a></li>
+          <li><a href="https://stoatworks-labs.com/software/pepper/guide/">User guide</a></li>
+          <li><a href="https://github.com/stoatworks-labs/pepper">Source on GitHub</a></li>
+        </ul>
       </noscript>
     </main>
 
